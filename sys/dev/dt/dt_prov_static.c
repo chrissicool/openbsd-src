@@ -35,6 +35,12 @@ struct dt_provider dt_prov_static = {
 };
 
 /*
+ * Interrupts
+ */
+DT_STATIC_PROBE1(intr, enter, "int");
+DT_STATIC_PROBE1(intr, leave, "int");
+
+/*
  * Scheduler
  */
 DT_STATIC_PROBE2(sched, dequeue, "pid_t", "pid_t");
@@ -110,6 +116,9 @@ DT_STATIC_PROBE3(refcnt, tdb, "void *", "int", "int");
  * List of all static probes
  */
 struct dt_probe *const dtps_static[] = {
+	/* Interrupts */
+	&_DT_STATIC_P(intr, enter),
+	&_DT_STATIC_P(intr, leave),
 	/* Scheduler */
 	&_DT_STATIC_P(sched, dequeue),
 	&_DT_STATIC_P(sched, enqueue),
