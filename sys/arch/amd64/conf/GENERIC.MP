@@ -2,8 +2,12 @@
 
 include "arch/amd64/conf/GENERIC"
 
-option	MULTIPROCESSOR
-#option	MP_LOCKDEBUG
-#option	WITNESS
+option		MULTIPROCESSOR
+option		MP_LOCKDEBUG
+option		WITNESS
+option		WITNESS_LOCKTRACE
+option		WITNESS_WATCH
+option		DDBPROF
+option		LOCK_PROFILING
 
 cpu*		at mainbus?
