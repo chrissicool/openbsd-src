@@ -268,8 +268,8 @@ END(longjmp)
 /*****************************************************************************/
 
 /*
- * int cpu_switchto(struct proc *old, struct proc *new)
- * Switch from "old" proc to "new".
+ * struct proc *cpu_switchto(struct proc *old, struct proc *new)
+ * Switch from "old" proc to "new". Return "old" in context of "new".
  */
 ENTRY(cpu_switchto)
 	pushq	%rbx
@@ -279,6 +279,7 @@ ENTRY(cpu_switchto)
 	pushq	%r14
 	pushq	%r15
 
+	movq	%rdi, %r10
 	movq	%rdi, %r13
 	movq	%rsi, %r12
 
@@ -306,6 +307,7 @@ ENTRY(cpu_switchto)
 	 *   %r13 - old proc, then old pcb
 	 *   %rcx - old pmap if not P_SYSTEM
 	 *   %r12 - new proc
+	 *   %r10 - old proc, carried to return
 	 *   %r9d - cpuid
 	 */
 
@@ -372,6 +374,7 @@ restore_saved:
 	 * Registers:
 	 *   %rax, %rdx - scratch
 	 *   %rcx - old pmap if not P_SYSTEM
+	 *   %r10 - old proc, carried to return
 	 *   %r12 - new process
 	 *   %r13 - new pcb
 	 *   %rbx - new pmap if not P_SYSTEM
@@ -458,6 +461,7 @@ switch_restored:
 	popq	%r12
 	popq	%rbp
 	popq	%rbx
+	movq	%r10,%rax
 	RETGUARD_CHECK(cpu_switchto, r11)
 	ret
 	lfence
@@ -727,6 +731,7 @@ spl_lowered:
 #endif
 
 NENTRY(proc_trampoline)
+	movq	%rax,%rdi
 	call	proc_trampoline_mi
 	movq	%r13,%rdi
 	movq	%r12,%rax

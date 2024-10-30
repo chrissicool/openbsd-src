@@ -164,6 +164,7 @@ thread_new(struct proc *parent, vaddr_t uaddr)
 	    (caddr_t)&p->p_endcopy - (caddr_t)&p->p_startcopy);
 	crhold(p->p_ucred);
 	p->p_addr = (struct user *)uaddr;
+	mtx_init(&p->p_mtx, IPL_SCHED);
 
 	/*
 	 * Initialize the timeouts.
@@ -339,12 +340,14 @@ fork_thread_start(struct proc *p, struct proc *parent, int flags)
 {
 	struct cpu_info *ci;
 
+	mtx_enter(&p->p_mtx);
 	SCHED_LOCK();
 	ci = sched_choosecpu_fork(parent, flags);
 	TRACEPOINT(sched, fork, p->p_tid + THREAD_PID_OFFSET,
 	    p->p_p->ps_pid, CPU_INFO_UNIT(ci));
 	setrunqueue(ci, p, p->p_usrpri);
 	SCHED_UNLOCK();
+	mtx_leave(&p->p_mtx);
 }
 
 int
@@ -694,14 +697,19 @@ freepid(pid_t pid)
 
 /* Do machine independent parts of switching to a new process */
 void
-proc_trampoline_mi(void)
+proc_trampoline_mi(struct proc *prevproc)
 {
 	struct schedstate_percpu *spc = &curcpu()->ci_schedstate;
 	struct proc *p = curproc;
 
 	SCHED_ASSERT_LOCKED();
 	clear_resched(curcpu());
+	if (prevproc != NULL) {
+		MUTEX_OLDIPL(&prevproc->p_mtx) = MUTEX_OLDIPL(&sched_lock);
+		mtx_leave(&prevproc->p_mtx);
+	}
 	mtx_leave(&sched_lock);
+	mtx_leave(&p->p_mtx);
 	spl0();
 
 	SCHED_ASSERT_UNLOCKED();

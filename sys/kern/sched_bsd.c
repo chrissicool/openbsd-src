@@ -240,6 +240,8 @@ schedcpu(void *unused)
 		if (p->p_cpu != NULL &&
 		    p->p_cpu->ci_schedstate.spc_idleproc == p)
 			continue;
+
+		mtx_enter(&p->p_mtx);
 		/*
 		 * Increment sleep time (if sleeping). We ignore overflow.
 		 */
@@ -250,9 +252,10 @@ schedcpu(void *unused)
 		 * If the process has slept the entire second,
 		 * stop recalculating its priority until it wakes up.
 		 */
-		if (p->p_slptime > 1)
+		if (p->p_slptime > 1) {
+			mtx_leave(&p->p_mtx);
 			continue;
-		SCHED_LOCK();
+		}
 		/*
 		 * p_pctcpu is only for diagnostic tools such as ps.
 		 */
@@ -271,10 +274,12 @@ schedcpu(void *unused)
 
 		if (p->p_stat == SRUN &&
 		    (p->p_runpri / SCHED_PPQ) != (p->p_usrpri / SCHED_PPQ)) {
+			SCHED_LOCK();
 			remrunqueue(p);
 			setrunqueue(p->p_cpu, p, p->p_usrpri);
+			SCHED_UNLOCK();
 		}
-		SCHED_UNLOCK();
+		mtx_leave(&p->p_mtx);
 	}
 	wakeup(&lbolt);
 	timeout_add_sec(&to, 1);
@@ -313,11 +318,14 @@ yield(void)
 {
 	struct proc *p = curproc;
 
+	mtx_enter(&p->p_mtx);
+	p->p_ru.ru_nvcsw++;
 	SCHED_LOCK();
 	setrunqueue(p->p_cpu, p, p->p_usrpri);
-	p->p_ru.ru_nvcsw++;
-	mi_switch();
 	SCHED_UNLOCK();
+
+	mi_switch();
+	mtx_leave(&p->p_mtx);
 }
 
 /*
@@ -331,11 +339,14 @@ preempt(void)
 {
 	struct proc *p = curproc;
 
+	mtx_enter(&p->p_mtx);
+	p->p_ru.ru_nivcsw++;
 	SCHED_LOCK();
 	setrunqueue(p->p_cpu, p, p->p_usrpri);
-	p->p_ru.ru_nivcsw++;
-	mi_switch();
 	SCHED_UNLOCK();
+
+	mi_switch();
+	mtx_leave(&p->p_mtx);
 }
 
 void
@@ -343,15 +354,21 @@ mi_switch(void)
 {
 	struct schedstate_percpu *spc = &curcpu()->ci_schedstate;
 	struct proc *p = curproc;
-	struct proc *nextproc;
+	struct proc *nextproc, *prevproc;
 	int oldipl;
 #ifdef MULTIPROCESSOR
 	int hold_count;
 #endif
 
 	KASSERT(p->p_stat != SONPROC);
+	SCHED_ASSERT_UNLOCKED();
+	MUTEX_ASSERT_LOCKED(&p->p_mtx);
+#ifdef DIAGNOSTIC
+	KASSERT(curcpu()->ci_mutex_level == 1 || (panicstr || db_active));
+#endif
 
-	SCHED_ASSERT_LOCKED();
+	/* preserve old IPL level so we can switch back to that */
+	oldipl = MUTEX_OLDIPL(&p->p_mtx);
 
 #ifdef MULTIPROCESSOR
 	/*
@@ -382,17 +399,23 @@ mi_switch(void)
 	 */
 	atomic_clearbits_int(&spc->spc_schedflags, SPCF_SWITCHCLEAR);
 
+	SCHED_LOCK();
 	nextproc = sched_chooseproc();
-
-	/* preserve old IPL level so we can switch back to that */
-	oldipl = MUTEX_OLDIPL(&sched_lock);
+	MUTEX_ASSERT_LOCKED(&nextproc->p_mtx);
 
 	if (p != nextproc) {
 		uvmexp.swtch++;
 		TRACEPOINT(sched, off__cpu, nextproc->p_tid + THREAD_PID_OFFSET,
 		    nextproc->p_p->ps_pid);
-		cpu_switchto(p, nextproc);
+		prevproc = cpu_switchto(p, nextproc);
 		TRACEPOINT(sched, on__cpu, NULL);
+
+		/* Release the previous proc, we are done with it. */
+		if (prevproc != NULL) {
+			/* Maintain sched_lock's IPL. We lower it below.*/
+			MUTEX_OLDIPL(&prevproc->p_mtx) = MUTEX_OLDIPL(&sched_lock);
+			mtx_leave(&prevproc->p_mtx);
+		}
 	} else {
 		TRACEPOINT(sched, remain__cpu, NULL);
 		p->p_stat = SONPROC;
@@ -401,12 +424,12 @@ mi_switch(void)
 	clear_resched(curcpu());
 
 	SCHED_ASSERT_LOCKED();
+	SCHED_UNLOCK();
+	SCHED_ASSERT_UNLOCKED();
 
 	/* Restore proc's IPL. */
-	MUTEX_OLDIPL(&sched_lock) = oldipl;
-	SCHED_UNLOCK();
-
-	SCHED_ASSERT_UNLOCKED();
+	MUTEX_OLDIPL(&p->p_mtx) = oldipl;
+	mtx_leave(&p->p_mtx);
 
 	assertwaitok();
 	smr_idle();
@@ -435,12 +458,12 @@ mi_switch(void)
 	/*
 	 * Reacquire the kernel_lock now.  We do this after we've
 	 * released the scheduler lock to avoid deadlock, and before
-	 * we reacquire the interlock and the scheduler lock.
+	 * we reacquire the proc lock.
 	 */
 	if (hold_count)
 		__mp_acquire_count(&kernel_lock, hold_count);
 #endif
-	SCHED_LOCK();
+	mtx_enter(&p->p_mtx);
 }
 
 /*
@@ -453,7 +476,7 @@ setrunnable(struct proc *p)
 	struct process *pr = p->p_p;
 	u_char prio;
 
-	SCHED_ASSERT_LOCKED();
+	MUTEX_ASSERT_LOCKED(&p->p_mtx);
 
 	switch (p->p_stat) {
 	case 0:
@@ -476,7 +499,9 @@ setrunnable(struct proc *p)
 				p->p_stat = SONPROC;
 			return;
 		}
+		SCHED_LOCK();
 		setrunqueue(NULL, p, prio);
+		SCHED_UNLOCK();
 		break;
 	case SSLEEP:
 		prio = p->p_slppri;
@@ -486,7 +511,9 @@ setrunnable(struct proc *p)
 		/* if not yet asleep, don't add to runqueue */
 		if (ISSET(p->p_flag, P_INSCHED))
 			return;
+		SCHED_LOCK();
 		setrunqueue(NULL, p, prio);
+		SCHED_UNLOCK();
 		break;
 	}
 	if (p->p_slptime > 1) {
@@ -506,9 +533,10 @@ setpriority(struct proc *p, uint32_t newcpu, uint8_t nice)
 {
 	unsigned int newprio;
 
+	MUTEX_ASSERT_LOCKED(&p->p_mtx);
+
 	newprio = min((PUSER + newcpu + NICE_WEIGHT * (nice - NZERO)), MAXPRI);
 
-	SCHED_ASSERT_LOCKED();
 	p->p_estcpu = newcpu;
 	p->p_usrpri = newprio;
 }
@@ -537,10 +565,10 @@ schedclock(struct proc *p)
 	if (p == spc->spc_idleproc || spc->spc_spinning)
 		return;
 
-	SCHED_LOCK();
+	mtx_enter(&p->p_mtx);
 	newcpu = ESTCPULIM(p->p_estcpu + 1);
 	setpriority(p, newcpu, p->p_p->ps_nice);
-	SCHED_UNLOCK();
+	mtx_leave(&p->p_mtx);
 }
 
 void (*cpu_setperf)(int);

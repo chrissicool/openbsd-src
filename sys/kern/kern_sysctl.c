@@ -2052,6 +2052,7 @@ fill_kproc(struct process *pr, struct kinfo_proc *ki, struct proc *p,
 	} else
 		tuagg_get_proc(&tu, p);
 
+	//XXXcludwig just a sysctl: mtx_enter(&p->p_mtx);
 	FILL_KPROC(ki, strlcpy, p, pr, pr->ps_ucred, pr->ps_pgrp,
 	    p, pr, s, vm, pr->ps_limit, pr->ps_sigacts, &tu, isthread,
 	    show_pointers);
@@ -2112,6 +2113,7 @@ fill_kproc(struct process *pr, struct kinfo_proc *ki, struct proc *p,
 				ki->p_stat = SSLEEP;
 		}
 	}
+	//XXXcludwig just a sysctl: mtx_leave(&p->p_mtx);
 }
 
 int

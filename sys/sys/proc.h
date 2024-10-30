@@ -336,12 +336,16 @@ struct p_inentry {
 
 /*
  *  Locks used to protect struct members in this file:
+ *	a	atomic
  *	I	immutable after creation
  *	S	scheduler lock
  *	U	uidinfolk
  *	l	read only reference, see lim_read_enter()
  *	o	owned (modified only) by this thread
  *	m	this proc's' `p->p_p->ps_mtx'
+ *	p	this proc's' `p->p_mtx'
+ *
+ *  Lock order: m > p > S
  */
 struct proc {
 	TAILQ_ENTRY(proc) p_runq;	/* [S] current run/sleep queue */
@@ -355,27 +359,29 @@ struct proc {
 	struct	vmspace *p_vmspace;	/* [I] copy of p_p->ps_vmspace */
 	struct	p_inentry p_spinentry;	/* [o] cache for SP check */
 
-	int	p_flag;			/* P_* flags. */
+	int	p_flag;			/* [a] P_* flags. */
 	u_char	p_spare;		/* unused */
-	char	p_stat;			/* [S] S* process status. */
-	u_char	p_runpri;		/* [S] Runqueue priority */
+	char	p_stat;			/* [p] S* process status. */
+	u_char	p_runpri;		/* [p] Runqueue priority */
 	u_char	p_descfd;		/* if not 255, fdesc permits this fd */
 
-	pid_t	p_tid;			/* Thread identifier. */
-	LIST_ENTRY(proc) p_hash;	/* Hash chain. */
+	pid_t	p_tid;			/* [I] Thread identifier. */
+	LIST_ENTRY(proc) p_hash;	/* [I] Hash chain. */
+
+	struct mutex p_mtx;		/* per-thread mutex */
 
 /* The following fields are all zeroed upon creation in fork. */
 #define	p_startzero	p_dupfd
 	int	p_dupfd;	 /* Sideways return value from filedescopen. XXX */
 
 	/* scheduling */
-	int	p_cpticks;	 /* Ticks of cpu time. */
-	const volatile void *p_wchan;	/* [S] Sleep address. */
+	int	p_cpticks;	 	/* [p] Ticks of cpu time. */
+	const volatile void *p_wchan;	/* [p] Sleep address. */
 	struct	timeout p_sleep_to;/* timeout for tsleep() */
-	const char *p_wmesg;		/* [S] Reason for sleep. */
-	fixpt_t	p_pctcpu;		/* [S] %cpu for this thread */
-	u_int	p_slptime;		/* [S] Time since last blocked. */
-	struct	cpu_info * volatile p_cpu; /* [S] CPU we're running on. */
+	const char *p_wmesg;		/* [p] Reason for sleep. */
+	fixpt_t	p_pctcpu;		/* [p] %cpu for this thread */
+	u_int	p_slptime;		/* [p] Time since last blocked. */
+	struct	cpu_info * volatile p_cpu; /* [p] CPU we're running on. */
 
 	struct	rusage p_ru;		/* Statistics */
 	struct	tusage p_tu;		/* [o] accumulated times. */
@@ -396,7 +402,7 @@ struct proc {
 	sigset_t p_sigmask;		/* [o] Current signal mask */
 
 	char	p_name[_MAXCOMLEN];	/* thread name, incl NUL */
-	u_char	p_slppri;		/* [S] Sleeping priority */
+	u_char	p_slppri;		/* [p] Sleeping priority */
 	u_char	p_usrpri;	/* [S] Priority based on p_estcpu & ps_nice */
 	u_int	p_estcpu;		/* [S] Time averaged val of p_cpticks */
 	int	p_pledge_syscall;	/* Cache of current syscall */
@@ -609,7 +615,7 @@ void	single_thread_clear(struct proc *);
 
 int	proc_suspend_check(struct proc *, int);
 void	process_suspend_signal(struct process *);
-void	process_stop(struct process *, int, int);
+void	process_stop(struct process *, struct proc *,int, int);
 
 void	child_return(void *);
 
@@ -621,7 +627,7 @@ struct cond {
 
 #define COND_INITIALIZER()		{ .c_wait = 1 }
 
-void	proc_trampoline_mi(void);
+void	proc_trampoline_mi(struct proc *);
 
 /*
  * functions to handle sets of cpus.

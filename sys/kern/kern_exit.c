@@ -269,7 +269,9 @@ exit1(struct proc *p, int xexit, int xsig, int flags)
 	/*
 	 * NOTE: WE ARE NO LONGER ALLOWED TO SLEEP!
 	 */
+	mtx_enter(&p->p_mtx);
 	p->p_stat = SDEAD;
+	mtx_leave(&p->p_mtx);
 
 	LIST_REMOVE(p, p_hash);
 	LIST_REMOVE(p, p_list);

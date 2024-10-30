@@ -211,11 +211,11 @@ donice(struct proc *curp, struct process *chgpr, int n)
 		return (EACCES);
 	chgpr->ps_nice = n;
 	mtx_enter(&chgpr->ps_mtx);
-	SCHED_LOCK();
 	TAILQ_FOREACH(p, &chgpr->ps_threads, p_thr_link) {
+		mtx_enter(&p->p_mtx);
 		setpriority(p, p->p_estcpu, n);
+		mtx_leave(&p->p_mtx);
 	}
-	SCHED_UNLOCK();
 	mtx_leave(&chgpr->ps_mtx);
 	return (0);
 }

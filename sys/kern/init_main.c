@@ -196,6 +196,7 @@ main(void *framep)
 
 	KERNEL_LOCK_INIT();
 	SCHED_LOCK_INIT();
+	mtx_init(&p->p_mtx, IPL_SCHED);
 
 	rw_obj_init();
 	uvm_init();

@@ -161,7 +161,7 @@ void sched_idle(void *);
 void sched_exit(struct proc *);
 void sched_toidle(void);
 void mi_switch(void);
-void cpu_switchto(struct proc *, struct proc *);
+struct proc *cpu_switchto(struct proc *, struct proc *);
 struct proc *sched_chooseproc(void);
 struct cpu_info *sched_choosecpu(struct proc *);
 struct cpu_info *sched_choosecpu_fork(struct proc *parent, int);
@@ -208,6 +208,7 @@ extern struct mutex sched_lock;
 #define	SCHED_LOCK_INIT()	mtx_init(&sched_lock, IPL_SCHED)
 #define	SCHED_LOCK()		mtx_enter(&sched_lock)
 #define	SCHED_UNLOCK()		mtx_leave(&sched_lock)
+#define	SCHED_RELOCK()		do { SCHED_UNLOCK(); SCHED_LOCK(); } while (0)
 
 #endif	/* _KERNEL */
 #endif	/* _SYS_SCHED_H_ */

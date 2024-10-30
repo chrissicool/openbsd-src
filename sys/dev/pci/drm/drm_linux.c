@@ -119,11 +119,13 @@ __set_current_state(int state)
 	struct proc *p = curproc;
 
 	KASSERT(state == TASK_RUNNING);
+	mtx_enter(&p->p_mtx);
 	SCHED_LOCK();
 	unsleep(p);
+	SCHED_UNLOCK();
 	p->p_stat = SONPROC;
 	atomic_clearbits_int(&p->p_flag, P_INSCHED);
-	SCHED_UNLOCK();
+	mtx_leave(&p->p_mtx);
 }
 
 void
@@ -161,12 +163,7 @@ schedule_timeout_uninterruptible(long timeout)
 int
 wake_up_process(struct proc *p)
 {
-	int rv;
-
-	SCHED_LOCK();
-	rv = wakeup_proc(p);
-	SCHED_UNLOCK();
-	return rv;
+	return wakeup_proc(p);
 }
 
 int

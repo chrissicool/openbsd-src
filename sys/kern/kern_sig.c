@@ -125,7 +125,7 @@ int proc_trap(struct proc *, int);
 void proc_stop_setup(struct proc *p);
 void proc_stop_finish(struct proc *p);
 
-void process_continue(struct process *, int);
+void process_continue(struct process *, struct proc *p, int);
 
 void setsigctx(struct proc *, int, struct sigctx *);
 void postsig_done(struct proc *, int, sigset_t, int);
@@ -1057,7 +1057,7 @@ ptsignal_locked(struct proc *p, int signum, enum signal_type type)
 	if (prop & (SA_CONT | SA_STOP))
 		siglist = &pr->ps_siglist;
 
-	SCHED_LOCK();
+	mtx_enter(&p->p_mtx);
 
 	switch (p->p_stat) {
 
@@ -1104,7 +1104,7 @@ ptsignal_locked(struct proc *p, int signum, enum signal_type type)
 				unsleep(p);
 			}
 
-			process_continue(pr, P_SUSPSIG);
+			process_continue(pr, p, P_SUSPSIG);
 			wakeparent = 1;
 			goto out;
 		}
@@ -1207,7 +1207,7 @@ ptsignal_locked(struct proc *p, int signum, enum signal_type type)
 			mask = 0;
 			pr->ps_xsig = signum;
 			atomic_setbits_int(&pr->ps_flags, PS_STOPPING);
-			process_stop(pr, P_SUSPSIG, SINGLE_SUSPEND);
+			process_stop(pr, p, P_SUSPSIG, SINGLE_SUSPEND);
 			wakeparent = 1;
 			goto out;
 		}
@@ -1254,7 +1254,7 @@ out:
 		atomic_clearbits_int(&pr->ps_flags, PS_CONTINUED);
 	}
 
-	SCHED_UNLOCK();
+	mtx_leave(&p->p_mtx);
 	if (wakeparent) {
 		if (prop & SA_STOP)
 			process_suspend_signal(pr);
@@ -1440,11 +1440,11 @@ cursig(struct proc *p, struct sigctx *sctx, int deep)
 				mtx_enter(&pr->ps_mtx);
 				pr->ps_xsig = signum;
 				atomic_setbits_int(&pr->ps_flags, PS_STOPPING);
-				SCHED_LOCK();
-				process_stop(pr, P_SUSPSIG, SINGLE_SUSPEND);
+				mtx_enter(&p->p_mtx);
+				process_stop(pr, p, P_SUSPSIG, SINGLE_SUSPEND);
 				atomic_setbits_int(&p->p_flag, P_SUSPSIG);
 				proc_stop_setup(p);
-				SCHED_UNLOCK();
+				mtx_leave(&p->p_mtx);
 				process_suspend_signal(pr);
 				proc_stop_finish(p);
 				mtx_leave(&pr->ps_mtx);
@@ -1505,11 +1505,11 @@ proc_trap(struct proc *p, int signum)
 	proc_suspend_check_locked(p, 0);
 
 	atomic_setbits_int(&pr->ps_flags, PS_STOPPING | PS_TRAPPED);
-	SCHED_LOCK();
-	process_stop(pr, P_SUSPSIG, SINGLE_SUSPEND);
+	mtx_enter(&p->p_mtx);
+	process_stop(pr, p, P_SUSPSIG, SINGLE_SUSPEND);
 	atomic_setbits_int(&p->p_flag, P_SUSPSIG);
 	proc_stop_setup(p);
-	SCHED_UNLOCK();
+	mtx_leave(&p->p_mtx);
 	pr->ps_xsig = signum;
 	pr->ps_trapped = p;
 
@@ -1519,6 +1519,7 @@ proc_trap(struct proc *p, int signum)
 	 * Clear all flags for proc and process by hand here since ptrace
 	 * just calls setrunnable on the thread without clearing anything.
 	 */
+	mtx_enter(&p->p_mtx);
 	atomic_clearbits_int(&p->p_flag, P_SUSPSIG);
 	atomic_clearbits_int(&pr->ps_flags,
 	    PS_WAITED | PS_STOPPED | PS_TRAPPED);
@@ -1528,11 +1529,10 @@ proc_trap(struct proc *p, int signum)
 	pr->ps_trapped = NULL;
 
 	if ((p->p_flag & P_TRACESINGLE) == 0) {
-		SCHED_LOCK();
-		process_continue(pr, P_SUSPSIG);
-		SCHED_UNLOCK();
+		process_continue(pr, p, P_SUSPSIG);
 	}
 	atomic_clearbits_int(&p->p_flag, P_TRACESINGLE);
+	mtx_leave(&p->p_mtx);
 	mtx_leave(&pr->ps_mtx);
 
 	return signum;
@@ -1542,7 +1542,7 @@ proc_trap(struct proc *p, int signum)
  * Continue all threads of a process that were stopped because of `flag'.
  */
 void
-process_continue(struct process *pr, int flag)
+process_continue(struct process *pr, struct proc *l, int flag)
 {
 	struct proc *q, *p = NULL;
 
@@ -1559,12 +1559,8 @@ process_continue(struct process *pr, int flag)
 			continue;
 		atomic_clearbits_int(&q->p_flag, flag);
 
-		/*
-		 * XXX in ptsignal the SCHED_LOCK is already held so we can't
-		 * grab it here until that is fixed.
-		 */
-		/* XXX SCHED_LOCK(); */
-		SCHED_ASSERT_LOCKED();
+		if (q != l)
+			mtx_enter(&q->p_mtx);
 		/*
 		 * Stopping a process is not an atomic operation so
 		 * it is possible that some threads are not stopped
@@ -1581,7 +1577,8 @@ process_continue(struct process *pr, int flag)
 			else
 				q->p_stat = SSLEEP;
 		}
-		/* XXX SCHED_UNLOCK(); */
+		if (q != l)
+			mtx_leave(&q->p_mtx);
 	}
 }
 
@@ -1590,7 +1587,7 @@ process_continue(struct process *pr, int flag)
  * Depending on `mode' stopped and sleeping threads may be woken up.
  */
 void
-process_stop(struct process *pr, int flag, int mode)
+process_stop(struct process *pr, struct proc *l, int flag, int mode)
 {
 	struct proc *q, *p = NULL;
 
@@ -1608,13 +1605,8 @@ process_stop(struct process *pr, int flag, int mode)
 			continue;
 		atomic_setbits_int(&q->p_flag, flag);
 
-		/*
-		 * XXX in ptsignal the SCHED_LOCK is already held so we can't
-		 * grab it here until that is fixed.
-		 */
-		/* XXX SCHED_LOCK(); */
-		SCHED_ASSERT_LOCKED();
-
+		if (q != l)
+			mtx_enter(&q->p_mtx);
 		switch (q->p_stat) {
 		case SSTOP:
 			if (mode == SINGLE_EXIT) {
@@ -1645,7 +1637,8 @@ process_stop(struct process *pr, int flag, int mode)
 		case SDEAD:
 			break;
 		}
-		/* XXX SCHED_UNLOCK(); */
+		if (q != l)
+			mtx_leave(&q->p_mtx);
 	}
 }
 
@@ -1656,18 +1649,12 @@ void
 proc_stop_setup(struct proc *p)
 {
 	MUTEX_ASSERT_LOCKED(&p->p_p->ps_mtx);
-	/*
-	 * XXX in ptsignal the SCHED_LOCK is already held so we can't
-	 * grab it here until that is fixed.
-	 */
-	/* XXX SCHED_LOCK(); */
-	SCHED_ASSERT_LOCKED();
+	MUTEX_ASSERT_LOCKED(&p->p_mtx);
 
 	TRACEPOINT(sched, stop, NULL);
 
 	atomic_setbits_int(&p->p_flag, P_INSCHED);
 	p->p_stat = SSTOP;
-	/* XXX SCHED_UNLOCK(); */
 }
 
 /*
@@ -1680,16 +1667,16 @@ proc_stop_finish(struct proc *p)
 
 	MUTEX_ASSERT_LOCKED(&pr->ps_mtx);
 	mtx_leave(&pr->ps_mtx);
-	SCHED_LOCK();
 
+	mtx_enter(&p->p_mtx);
 	atomic_clearbits_int(&p->p_flag, P_INSCHED);
 	if (p->p_stat == SSTOP) {
 		p->p_ru.ru_nvcsw++;
 		mi_switch();
 	}
 	KASSERT(p->p_stat == SONPROC);
+	mtx_leave(&p->p_mtx);
 
-	SCHED_UNLOCK();
 	mtx_enter(&pr->ps_mtx);
 }
 
@@ -2245,10 +2232,10 @@ proc_suspend_check_locked(struct proc *p, int deep)
 		if (pr->ps_flags & PS_SINGLEUNWIND ||
 		    pr->ps_flags & PS_SINGLEEXIT)
 			return (ERESTART);
-		SCHED_LOCK();
+		mtx_enter(&p->p_mtx);
 		if (p->p_stat != SSTOP)
 			err = EWOULDBLOCK;
-		SCHED_UNLOCK();
+		mtx_leave(&p->p_mtx);
 		return (err);
 	}
 
@@ -2259,10 +2246,9 @@ proc_suspend_check_locked(struct proc *p, int deep)
 			exit1(p, 0, 0, EXIT_THREAD_NOCHECK);
 			/* NOTREACHED */
 		}
-
-		SCHED_LOCK();
+		mtx_enter(&p->p_mtx);
 		proc_stop_setup(p);
-		SCHED_UNLOCK();
+		mtx_leave(&p->p_mtx);
 		process_suspend_signal(pr);
 
 		/* not exiting and don't need to unwind, so suspend */
@@ -2324,10 +2310,9 @@ single_thread_set(struct proc *p, int flags)
 #endif
 	}
 	pr->ps_single = p;
-
-	SCHED_LOCK();
-	process_stop(pr, P_SUSPSINGLE, mode);
-	SCHED_UNLOCK();
+	mtx_enter(&p->p_mtx);
+	process_stop(pr, p, P_SUSPSINGLE, mode);
+	mtx_leave(&p->p_mtx);
 
 	/* count ourself out */
 	--pr->ps_suspendcnt;
@@ -2353,10 +2338,9 @@ single_thread_clear(struct proc *p)
 	pr->ps_single = NULL;
 	atomic_clearbits_int(&pr->ps_flags, PS_SINGLEUNWIND | PS_SINGLEEXIT);
 
-	SCHED_LOCK();
-	process_continue(pr, P_SUSPSINGLE);
-	SCHED_UNLOCK();
-
+	mtx_enter(&p->p_mtx);
+	process_continue(pr, p, P_SUSPSINGLE);
+	mtx_leave(&p->p_mtx);
 	mtx_leave(&pr->ps_mtx);
 }
 

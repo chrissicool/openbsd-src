@@ -372,9 +372,11 @@ uvm_swapout_threads(void)
 		 */
 		slpp = NULL;
 		TAILQ_FOREACH(p, &pr->ps_threads, p_thr_link) {
+			mtx_enter(&p->p_mtx);
 			switch (p->p_stat) {
 			case SRUN:
 			case SONPROC:
+				mtx_leave(&p->p_mtx);
 				goto next_process;
 
 			case SSLEEP:
@@ -382,11 +384,13 @@ uvm_swapout_threads(void)
 				if (slpp == NULL ||
 				    slpp->p_slptime < p->p_slptime)
 					slpp = p;
-				continue;
+				break;
 			}
+			mtx_leave(&p->p_mtx);
 		}
 
 		if (slpp != NULL) {
+			mtx_enter(&sllp->p_mtx);
 			if (slpp->p_slptime >= maxslp) {
 				pmap_collect(pr->ps_vmspace->vm_map.pmap);
 				didswap++;
@@ -394,6 +398,7 @@ uvm_swapout_threads(void)
 				outpr = pr;
 				outpri = slpp->p_slptime;
 			}
+			mtx_leave(&sllp->p_mtx);
 		}
 next_process:	;
 	}
