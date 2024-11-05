@@ -31,7 +31,7 @@ struct dt_probe	**dtps_return;
 unsigned int	  dtps_nsysent = SYS_MAXSYSCALL;
 
 /* Flags that make sense for this provider */
-#define DTEVT_PROV_SYSCALL	(DTEVT_COMMON|DTEVT_FUNCARGS)
+#define DTEVT_PROV_SYSCALL	(DTEVT_COMMON|DTEVT_FUNCARGS|DTEVT_FUNCRET)
 
 int	dt_prov_syscall_alloc(struct dt_probe *, struct dt_softc *,
 	    struct dt_pcb_list *, struct dtioc_req *);
@@ -193,14 +193,16 @@ dt_prov_syscall_return(struct dt_provider *dtpv, ...)
 		if (dtev == NULL)
 			continue;
 
-		if (error) {
-			dtev->dtev_retval[0] = -1;
-			dtev->dtev_retval[1] = 0;
-			dtev->dtev_error = error;
-		} else {
-			dtev->dtev_retval[0] = retval[0];
-			dtev->dtev_retval[1] = retval[1];
-			dtev->dtev_error = 0;
+		if (ISSET(dp->dp_evtflags, DTEVT_FUNCRET)) {
+			if (error) {
+				dtev->dtev_retval[0] = -1;
+				dtev->dtev_retval[1] = 0;
+				dtev->dtev_error = error;
+			} else {
+				dtev->dtev_retval[0] = retval[0];
+				dtev->dtev_retval[1] = retval[1];
+				dtev->dtev_error = 0;
+			}
 		}
 
 		dt_pcb_ring_consume(dp, dtev);

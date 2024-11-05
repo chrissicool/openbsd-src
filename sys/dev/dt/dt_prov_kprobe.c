@@ -54,7 +54,7 @@ int	dt_prov_kprobe_hook(struct dt_provider *, ...);
 int	dt_prov_kprobe_dealloc(struct dt_probe *, struct dt_softc *,
 	    struct dtioc_req *);
 
-#define DTEVT_PROV_KPROBE (DTEVT_COMMON|DTEVT_FUNCARGS)
+#define DTEVT_PROV_KPROBE (DTEVT_COMMON|DTEVT_FUNCARGS|DTEVT_FUNCRET)
 
 struct dt_provider dt_prov_kprobe = {
 	.dtpv_name    = "kprobe",
@@ -483,19 +483,21 @@ dt_prov_kprobe_hook(struct dt_provider *dtpv, ...)
 			if (dtev == NULL)
 				continue;
 
+			if (ISSET(dp->dp_evtflags, DTEVT_FUNCRET)) {
 #if defined(__amd64__)
-			retval[0] = tf->tf_rax;
-			retval[1] = 0;
-			error = 0;
+				retval[0] = tf->tf_rax;
+				retval[1] = 0;
+				error = 0;
 #elif defined(__i386)
-			retval[0] = tf->tf_eax;
-			retval[1] = 0;
-			error = 0;
+				retval[0] = tf->tf_eax;
+				retval[1] = 0;
+				error = 0;
 #endif
 
-			dtev->dtev_retval[0] = retval[0];
-			dtev->dtev_retval[1] = retval[1];
-			dtev->dtev_error = error;
+				dtev->dtev_retval[0] = retval[0];
+				dtev->dtev_retval[1] = retval[1];
+				dtev->dtev_error = error;
+			}
 
 			dt_pcb_ring_consume(dp, dtev);
 		}

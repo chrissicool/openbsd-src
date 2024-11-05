@@ -2067,6 +2067,8 @@ ba2flags(struct bt_arg *ba)
 		flags |= DTEVT_FUNCARGS;
 		break;
 	case B_AT_BI_RETVAL:
+		flags |= DTEVT_FUNCRET;
+		break;
 	case B_AT_BI_PROBE:
 		break;
 	case B_AT_MF_COUNT:

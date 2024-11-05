@@ -74,6 +74,7 @@ struct dt_evt {
 #define DTEVT_USTACK	(1 << 1)		/* userland stack */
 #define DTEVT_KSTACK	(1 << 2)		/* kernel stack */
 #define DTEVT_FUNCARGS	(1 << 3)		/* function arguments */
+#define DTEVT_FUNCRET	(1 << 4)		/* function return value */
 
 #define	DTEVT_FLAG_BITS		\
 	"\020"			\
@@ -81,6 +82,7 @@ struct dt_evt {
 	"\002USTACK"		\
 	"\003KSTACK"		\
 	"\004FUNCARGS"		\
+	"\005FUNCRET"		\
 
 struct dtioc_probe_info {
 	uint32_t	dtpi_pbn;		/* probe number */
