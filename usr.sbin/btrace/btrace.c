@@ -2061,7 +2061,9 @@ ba2flags(struct bt_arg *ba)
 	case B_AT_BI_CPID:
 	case B_AT_BI_PID:
 	case B_AT_BI_TID:
+		break;
 	case B_AT_BI_NSECS:
+		flags |= DTEVT_TIMESTAMP;
 		break;
 	case B_AT_BI_ARG0 ... B_AT_BI_ARG9:
 		flags |= DTEVT_FUNCARGS;

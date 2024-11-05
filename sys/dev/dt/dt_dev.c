@@ -833,7 +833,8 @@ dt_pcb_ring_get(struct dt_pcb *dp, int profiling)
 	dtev->dtev_cpu = cpu_number();
 	dtev->dtev_pid = p->p_p->ps_pid;
 	dtev->dtev_tid = p->p_tid + THREAD_PID_OFFSET;
-	nanotime(&dtev->dtev_tsp);
+	if (ISSET(dp->dp_evtflags, DTEVT_TIMESTAMP))
+		nanotime(&dtev->dtev_tsp);
 
 	if (ISSET(dp->dp_evtflags, DTEVT_EXECNAME))
 		strlcpy(dtev->dtev_comm, p->p_p->ps_comm, sizeof(dtev->dtev_comm));

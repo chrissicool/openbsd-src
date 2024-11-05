@@ -47,11 +47,11 @@ struct dt_evt {
 	unsigned int		dtev_cpu;	/* CPU id */
 	pid_t			dtev_pid;	/* ID of current process */
 	pid_t			dtev_tid;	/* ID of current thread */
-	struct timespec		dtev_tsp;	/* timestamp (nsecs) */
 
 	/*
 	 * Recorded if the corresponding flag is set.
 	 */
+	struct timespec		dtev_tsp;	/* timestamp (nsecs) */
 	struct stacktrace	dtev_kstack;	/* kernel stack frame */
 	struct stacktrace	dtev_ustack;	/* userland stack frame */
 	char			dtev_comm[DTMAXCOMLEN]; /* current pr. name */
@@ -75,6 +75,7 @@ struct dt_evt {
 #define DTEVT_KSTACK	(1 << 2)		/* kernel stack */
 #define DTEVT_FUNCARGS	(1 << 3)		/* function arguments */
 #define DTEVT_FUNCRET	(1 << 4)		/* function return value */
+#define DTEVT_TIMESTAMP	(1 << 5)		/* timestamp (nsecs) */
 
 #define	DTEVT_FLAG_BITS		\
 	"\020"			\
@@ -83,6 +84,7 @@ struct dt_evt {
 	"\003KSTACK"		\
 	"\004FUNCARGS"		\
 	"\005FUNCRET"		\
+	"\006TIMESTAMP"		\
 
 struct dtioc_probe_info {
 	uint32_t	dtpi_pbn;		/* probe number */
@@ -147,7 +149,10 @@ struct dtioc_getaux {
 #include <sys/smr.h>
 
 /* Flags that make sense for all providers. */
-#define DTEVT_COMMON	(DTEVT_EXECNAME|DTEVT_KSTACK|DTEVT_USTACK)
+#define DTEVT_COMMON	(DTEVT_EXECNAME | \
+			 DTEVT_KSTACK | \
+			 DTEVT_USTACK | \
+			 DTEVT_TIMESTAMP)
 
 #define M_DT M_DEVBUF /* XXX FIXME */
 
