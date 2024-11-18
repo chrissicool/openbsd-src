@@ -44,13 +44,13 @@
  */
 struct dt_evt {
 	unsigned int		dtev_pbn;	/* Probe number */
-	unsigned int		dtev_cpu;	/* CPU id */
-	pid_t			dtev_pid;	/* ID of current process */
-	pid_t			dtev_tid;	/* ID of current thread */
 
 	/*
 	 * Recorded if the corresponding flag is set.
 	 */
+	unsigned int		dtev_cpu;	/* CPU id */
+	pid_t			dtev_pid;	/* ID of current process */
+	pid_t			dtev_tid;	/* ID of current thread */
 	struct timespec		dtev_tsp;	/* timestamp (nsecs) */
 	struct stacktrace	dtev_kstack;	/* kernel stack frame */
 	struct stacktrace	dtev_ustack;	/* userland stack frame */
@@ -76,6 +76,9 @@ struct dt_evt {
 #define DTEVT_FUNCARGS	(1 << 3)		/* function arguments */
 #define DTEVT_FUNCRET	(1 << 4)		/* function return value */
 #define DTEVT_TIMESTAMP	(1 << 5)		/* timestamp (nsecs) */
+#define DTEVT_CPU	(1 << 6)		/* CPU id */
+#define DTEVT_PID	(1 << 7)		/* PID */
+#define DTEVT_TID	(1 << 8)		/* TID */
 
 #define	DTEVT_FLAG_BITS		\
 	"\020"			\
@@ -85,6 +88,9 @@ struct dt_evt {
 	"\004FUNCARGS"		\
 	"\005FUNCRET"		\
 	"\006TIMESTAMP"		\
+	"\007CPU"		\
+	"\010PID"		\
+	"\011TID"		\
 
 struct dtioc_probe_info {
 	uint32_t	dtpi_pbn;		/* probe number */

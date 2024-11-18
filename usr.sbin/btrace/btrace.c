@@ -2058,9 +2058,13 @@ ba2flags(struct bt_arg *ba)
 		flags |= DTEVT_EXECNAME;
 		break;
 	case B_AT_BI_CPU:
-	case B_AT_BI_CPID:
+		flags |= DTEVT_CPU;
+		break;
 	case B_AT_BI_PID:
+		flags |= DTEVT_PID;
+		break;
 	case B_AT_BI_TID:
+		flags |= DTEVT_TID;
 		break;
 	case B_AT_BI_NSECS:
 		flags |= DTEVT_TIMESTAMP;
@@ -2071,6 +2075,7 @@ ba2flags(struct bt_arg *ba)
 	case B_AT_BI_RETVAL:
 		flags |= DTEVT_FUNCRET;
 		break;
+	case B_AT_BI_CPID:
 	case B_AT_BI_PROBE:
 		break;
 	case B_AT_MF_COUNT:
