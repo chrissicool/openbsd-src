@@ -27,6 +27,7 @@
 #include <sys/malloc.h>
 #include <sys/device.h>
 #include <sys/evcount.h>
+#include <sys/tracepoint.h>
 
 #include <machine/bus.h>
 #include <machine/cpufunc.h>
@@ -1195,7 +1196,9 @@ agintc_irq_handler(void *frame)
 
 		s = agintc_splraise(ih->ih_ipl);
 		intr_enable();
+		TRACEPOINT(intr, enter, irq);
 		agintc_run_handler(ih, frame, s);
+		TRACEPOINT(intr, leave, irq);
 		intr_disable();
 		agintc_eoi(irq);
 
@@ -1206,8 +1209,14 @@ agintc_irq_handler(void *frame)
 	pri = sc->sc_handler[irq].iq_irq_max;
 	s = agintc_splraise(pri);
 	intr_enable();
+	if (pri < IPL_IPI) {
+		TRACEPOINT(intr, enter, irq);
+	}
 	TAILQ_FOREACH(ih, &sc->sc_handler[irq].iq_list, ih_list) {
 		agintc_run_handler(ih, frame, s);
+	}
+	if (pri < IPL_IPI) {
+		TRACEPOINT(intr, leave, irq);
 	}
 	intr_disable();
 	agintc_eoi(irq);
