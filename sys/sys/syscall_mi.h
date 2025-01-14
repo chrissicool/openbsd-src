@@ -248,6 +248,13 @@ mi_ast(struct proc *p, int resched)
 		ADDUPROF(p);
 		KERNEL_UNLOCK();
 	}
+#if NDT > 0
+	if (curcpu()->ci_schedstate.spc_dt > 0) {
+		dt_wakeup();
+		resched = 1;
+	}
+#endif
+
 	if (resched)
 		preempt();
 

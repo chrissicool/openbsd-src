@@ -30,6 +30,8 @@
 
 #include <uvm/uvm_extern.h>
 
+#include "dt.h"
+
 void sched_kthreads_create(void *);
 
 int sched_proc_to_cpu_cost(struct cpu_info *ci, struct proc *p);
@@ -169,6 +171,11 @@ sched_idle(void *v)
 	mi_switch();
 
 	while (1) {
+#if NDT > 0
+		if (spc->spc_dt > 0) {
+			dt_wakeup();
+		}
+#endif
 		while (spc->spc_whichqs != 0) {
 			struct proc *dead;
 

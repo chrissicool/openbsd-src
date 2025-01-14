@@ -122,6 +122,8 @@ struct schedstate_percpu {
 	struct clockintr spc_roundrobin;/* [o] roundrobin handle */
 	struct clockintr spc_statclock;	/* [o] statclock handle */
 
+	int spc_dt;			/* [o] dt(4) wake up flag */
+
 	u_int spc_nrun;			/* procs on the run queues */
 
 	volatile uint32_t spc_whichqs;

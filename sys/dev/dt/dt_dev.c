@@ -120,7 +120,6 @@ struct dt_softc {
 	SLIST_ENTRY(dt_softc)	 ds_next;	/* [K] descriptor list */
 	int			 ds_unit;	/* [I] D_CLONE unique unit */
 	pid_t			 ds_pid;	/* [I] PID of tracing program */
-	void			*ds_si;		/* [I] to defer wakeup(9) */
 
 	struct dt_pcb_list	 ds_pcbs;	/* [K] list of enabled PCBs */
 	int			 ds_recording;	/* [K] currently recording? */
@@ -166,8 +165,7 @@ int	dt_ioctl_get_auxbase(struct dt_softc *, struct dtioc_getaux *);
 
 int	dt_ring_copy(struct dt_cpubuf *, struct uio *, size_t, size_t *);
 
-void	dt_wakeup(struct dt_softc *);
-void	dt_deferred_wakeup(void *);
+void	dt_need_wakeup(struct dt_softc *);
 
 void
 dtattach(struct device *parent, struct device *self, void *aux)
@@ -251,7 +249,7 @@ dtread(dev_t dev, struct uio *uio, int flags)
 		return (EMSGSIZE);
 
 	while (!atomic_load_int(&sc->ds_evtcnt)) {
-		sleep_setup(sc, PWAIT | PCATCH, "dtread");
+		sleep_setup(&dt_tracing, PWAIT | PCATCH, "dtread");
 		error = sleep_finish(INFSLP, !atomic_load_int(&sc->ds_evtcnt));
 		if (error == EINTR || error == ERESTART)
 			break;
@@ -408,11 +406,6 @@ dtalloc(void)
 	if (r != 0)
 		goto oom;
 
-	sc->ds_si = softintr_establish(IPL_SOFTCLOCK | IPL_MPSAFE,
-	    dt_deferred_wakeup, sc);
-	if (sc->ds_si == NULL)
-		goto oom;
-
 	return sc;
 oom:
 	dtfree(sc);
@@ -424,9 +417,6 @@ dtfree(struct dt_softc *sc)
 {
 	struct dt_cpubuf *dc;
 	int i;
-
-	if (sc->ds_si != NULL)
-		softintr_disestablish(sc->ds_si);
 
 	for (i = 0; i < ncpusfound; i++) {
 		dc = &sc->ds_cpu[i];
@@ -864,7 +854,7 @@ dt_pcb_ring_consume(struct dt_pcb *dp, struct dt_evt *dtev)
 	atomic_inc_int(&dp->dp_sc->ds_evtcnt);
 	dc->dc_inevt = 0;
 
-	dt_wakeup(dp->dp_sc);
+	dt_need_wakeup(dp->dp_sc);
 }
 
 /*
@@ -923,22 +913,32 @@ out:
 }
 
 void
-dt_wakeup(struct dt_softc *sc)
+dt_need_wakeup(struct dt_softc *sc)
 {
+	int s1, s2;
+
 	/*
-	 * It is not always safe or possible to call wakeup(9) and grab
-	 * the SCHED_LOCK() from a given tracepoint.  This is true for
-	 * any tracepoint that might trigger inside the scheduler or at
-	 * any IPL higher than IPL_SCHED.  For this reason use a soft-
-	 * interrupt to defer the wakeup.
+	 * It is not always safe or possible to call wakeup(9) and from
+	 * any given tracepoint.  This is true for any tracepoint that
+	 * might trigger at any IPL higher than IPL_SCHED.  For this
+	 * reason defer the wakeup to a later point, when it's safe.
 	 */
-	softintr_schedule(sc->ds_si);
+
+	s1 = splsched();
+	s2 = splsched();
+	splx(s2);
+	splx(s1);
+
+	/* XXX is that assumption safe? */
+	if (s1 < s2)
+		wakeup(&dt_tracing);
+	else
+		curcpu()->ci_schedstate.spc_dt++;
 }
 
 void
-dt_deferred_wakeup(void *arg)
+dt_wakeup(void)
 {
-	struct dt_softc *sc = arg;
-
-	wakeup(sc);
+	wakeup(&dt_tracing);
+	curcpu()->ci_schedstate.spc_dt = 0;
 }

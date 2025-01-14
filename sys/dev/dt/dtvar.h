@@ -263,6 +263,7 @@ struct dt_probe *dt_dev_alloc_probe(const char *, const char *,
 void		 dt_dev_register_probe(struct dt_probe *);
 
 void		 dt_clock(struct clockrequest *, void *, void *);
+void		 dt_wakeup(void);
 
 extern volatile uint32_t	dt_tracing;	/* currently tracing? */
 
