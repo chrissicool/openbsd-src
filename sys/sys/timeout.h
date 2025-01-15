@@ -57,18 +57,18 @@ struct timeout {
 #define TIMEOUT_MPSAFE		0x10	/* run without kernel lock */
 
 struct timeoutstat {
-	uint64_t tos_added;		/* timeout_add*(9) calls */
-	uint64_t tos_cancelled;		/* dequeued during timeout_del*(9) */
-	uint64_t tos_deleted;		/* timeout_del*(9) calls */
-	uint64_t tos_late;		/* run after deadline */
-	uint64_t tos_pending;		/* number currently ONQUEUE */
-	uint64_t tos_readded;		/* timeout_add*(9) + already ONQUEUE */
-	uint64_t tos_rescheduled;	/* bucketed + already SCHEDULED */
-	uint64_t tos_run_softclock;	/* run from softclock() */
-	uint64_t tos_run_thread;	/* run from softclock_thread() */
-	uint64_t tos_scheduled;		/* bucketed during softclock() */
-	uint64_t tos_softclocks;	/* softclock() calls */
-	uint64_t tos_thread_wakeups;	/* wakeups in softclock_thread() */
+	unsigned long tos_added;	/* timeout_add*(9) calls */
+	unsigned long tos_cancelled;	/* dequeued during timeout_del*(9) */
+	unsigned long tos_deleted;	/* timeout_del*(9) calls */
+	unsigned long tos_late;		/* run after deadline */
+	unsigned long tos_pending;	/* number currently ONQUEUE */
+	unsigned long tos_readded;	/* timeout_add*(9) + already ONQUEUE */
+	unsigned long tos_rescheduled;	/* bucketed + already SCHEDULED */
+	unsigned long tos_run_softclock;/* run from softclock() */
+	unsigned long tos_run_thread;	/* run from softclock_thread() */
+	unsigned long tos_scheduled;	/* bucketed during softclock() */
+	unsigned long tos_softclocks;	/* softclock() calls */
+	unsigned long tos_thread_wakeups; /* wakeups in softclock_thread() */
 };
 
 #ifdef _KERNEL

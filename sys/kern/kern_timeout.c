@@ -30,6 +30,7 @@
 #include <sys/kthread.h>
 #include <sys/proc.h>
 #include <sys/timeout.h>
+#include <sys/atomic.h>
 #include <sys/mutex.h>
 #include <sys/kernel.h>
 #include <sys/queue.h>			/* _Q_INVALIDATE */
@@ -56,13 +57,14 @@ struct timeout_ctx {
 /*
  * Locks used to protect global variables in this file:
  *
+ *	a	atomic access
  *	I	immutable after initialization
  *	T	timeout_mutex
  */
 struct mutex timeout_mutex = MUTEX_INITIALIZER(IPL_HIGH);
 
 void *softclock_si;			/* [I] softclock() interrupt handle */
-struct timeoutstat tostat;		/* [T] statistics and totals */
+struct timeoutstat tostat;		/* [a] statistics and totals */
 
 /*
  * Timeouts are kept in a hierarchical timing wheel. The to_time is the value
@@ -135,7 +137,7 @@ struct kclock {
 	(list)->next->prev = (elem);		\
 	(list)->next = (elem);			\
 	(elem)->prev = (list);			\
-	tostat.tos_pending++;			\
+	atomic_inc_long(&tostat.tos_pending);	\
 } while (0)
 
 #define CIRCQ_INSERT_TAIL(list, elem) do {	\
@@ -143,7 +145,7 @@ struct kclock {
 	(elem)->next = (list);			\
 	(list)->prev->next = (elem);		\
 	(list)->prev = (elem);			\
-	tostat.tos_pending++;			\
+	atomic_inc_long(&tostat.tos_pending);	\
 } while (0)
 
 #define CIRCQ_CONCAT(fst, snd) do {		\
@@ -161,7 +163,7 @@ struct kclock {
 	(elem)->prev->next = (elem)->next;      \
 	_Q_INVALIDATE((elem)->prev);		\
 	_Q_INVALIDATE((elem)->next);		\
-	tostat.tos_pending--;			\
+	atomic_dec_long(&tostat.tos_pending);	\
 } while (0)
 
 #define CIRCQ_FIRST(elem) ((elem)->next)
@@ -341,7 +343,7 @@ timeout_add(struct timeout *new, int to_ticks)
 			CIRCQ_REMOVE(&new->to_list);
 			CIRCQ_INSERT_TAIL(&timeout_new, &new->to_list);
 		}
-		tostat.tos_readded++;
+		atomic_inc_long(&tostat.tos_readded);
 		ret = 0;
 	} else {
 		SET(new->to_flags, TIMEOUT_ONQUEUE);
@@ -351,7 +353,7 @@ timeout_add(struct timeout *new, int to_ticks)
 	if (!kcov_cold)
 		new->to_process = curproc->p_p;
 #endif
-	tostat.tos_added++;
+	atomic_inc_long(&tostat.tos_added);
 	mtx_leave(&timeout_mutex);
 
 	return ret;
@@ -455,7 +457,7 @@ timeout_abs_ts(struct timeout *to, const struct timespec *abstime)
 			CIRCQ_REMOVE(&to->to_list);
 			CIRCQ_INSERT_TAIL(&timeout_new, &to->to_list);
 		}
-		tostat.tos_readded++;
+		atomic_inc_long(&tostat.tos_readded);
 		ret = 0;
 	} else {
 		SET(to->to_flags, TIMEOUT_ONQUEUE);
@@ -465,7 +467,7 @@ timeout_abs_ts(struct timeout *to, const struct timespec *abstime)
 	if (!kcov_cold)
 		to->to_process = curproc->p_p;
 #endif
-	tostat.tos_added++;
+	atomic_inc_long(&tostat.tos_added);
 
 	mtx_leave(&timeout_mutex);
 
@@ -481,11 +483,11 @@ timeout_del(struct timeout *to)
 	if (ISSET(to->to_flags, TIMEOUT_ONQUEUE)) {
 		CIRCQ_REMOVE(&to->to_list);
 		CLR(to->to_flags, TIMEOUT_ONQUEUE);
-		tostat.tos_cancelled++;
+		atomic_inc_long(&tostat.tos_cancelled);
 		ret = 1;
 	}
 	CLR(to->to_flags, TIMEOUT_TRIGGERED);
-	tostat.tos_deleted++;
+	atomic_inc_long(&tostat.tos_deleted);
 	mtx_leave(&timeout_mutex);
 
 	return ret;
@@ -717,15 +719,15 @@ softclock_process_kclock_timeout(struct timeout *to, int new)
 	struct kclock *kc = &timeout_kclock[to->to_kclock];
 
 	if (timespeccmp(&to->to_abstime, &kc->kc_lastscan, >)) {
-		tostat.tos_scheduled++;
+		atomic_inc_long(&tostat.tos_scheduled);
 		if (!new)
-			tostat.tos_rescheduled++;
+			atomic_inc_long(&tostat.tos_rescheduled);
 		CIRCQ_INSERT_TAIL(&timeout_wheel_kc[timeout_bucket(to)],
 		    &to->to_list);
 		return;
 	}
 	if (!new && timespeccmp(&to->to_abstime, &kc->kc_late, <=))
-		tostat.tos_late++;
+		atomic_inc_long(&tostat.tos_late);
 	if (ISSET(to->to_flags, TIMEOUT_PROC)) {
 #ifdef MULTIPROCESSOR
 		if (ISSET(to->to_flags, TIMEOUT_MPSAFE))
@@ -736,7 +738,7 @@ softclock_process_kclock_timeout(struct timeout *to, int new)
 		return;
 	}
 	timeout_run(&timeout_ctx_si, to);
-	tostat.tos_run_softclock++;
+	atomic_inc_long(&tostat.tos_run_softclock);
 }
 
 void
@@ -745,14 +747,14 @@ softclock_process_tick_timeout(struct timeout *to, int new)
 	int delta = to->to_time - ticks;
 
 	if (delta > 0) {
-		tostat.tos_scheduled++;
+		atomic_inc_long(&tostat.tos_scheduled);
 		if (!new)
-			tostat.tos_rescheduled++;
+			atomic_inc_long(&tostat.tos_rescheduled);
 		CIRCQ_INSERT_TAIL(&BUCKET(delta, to->to_time), &to->to_list);
 		return;
 	}
 	if (!new && delta < 0)
-		tostat.tos_late++;
+		atomic_inc_long(&tostat.tos_late);
 	if (ISSET(to->to_flags, TIMEOUT_PROC)) {
 #ifdef MULTIPROCESSOR
 		if (ISSET(to->to_flags, TIMEOUT_MPSAFE))
@@ -763,7 +765,7 @@ softclock_process_tick_timeout(struct timeout *to, int new)
 		return;
 	}
 	timeout_run(&timeout_ctx_si, to);
-	tostat.tos_run_softclock++;
+	atomic_inc_long(&tostat.tos_run_softclock);
 }
 
 /*
@@ -802,7 +804,7 @@ softclock(void *arg)
 			    __func__, to->to_kclock);
 		}
 	}
-	tostat.tos_softclocks++;
+	atomic_inc_long(&tostat.tos_softclocks);
 	needsproc = !CIRCQ_EMPTY(&timeout_proc);
 #ifdef MULTIPROCESSOR
 	need_proc_mp = !CIRCQ_EMPTY(&timeout_proc_mp);
@@ -843,12 +845,12 @@ softclock_thread_run(struct timeout_ctx *tctx)
 		sleep_finish(INFSLP, CIRCQ_EMPTY(tctx->tctx_todo));
 
 		mtx_enter(&timeout_mutex);
-		tostat.tos_thread_wakeups++;
+		atomic_inc_long(&tostat.tos_thread_wakeups);
 		while (!CIRCQ_EMPTY(todo)) {
 			to = timeout_from_circq(CIRCQ_FIRST(todo));
 			CIRCQ_REMOVE(&to->to_list);
 			timeout_run(tctx, to);
-			tostat.tos_run_thread++;
+			atomic_inc_long(&tostat.tos_run_thread);
 		}
 		mtx_leave(&timeout_mutex);
 	}
@@ -925,9 +927,18 @@ timeout_sysctl(void *oldp, size_t *oldlenp, void *newp, size_t newlen)
 {
 	struct timeoutstat status;
 
-	mtx_enter(&timeout_mutex);
-	memcpy(&status, &tostat, sizeof(status));
-	mtx_leave(&timeout_mutex);
+	status.tos_added = atomic_load_long(&tostat.tos_added);
+	status.tos_cancelled = atomic_load_long(&tostat.tos_cancelled);
+	status.tos_deleted = atomic_load_long(&tostat.tos_deleted);
+	status.tos_late = atomic_load_long(&tostat.tos_late);
+	status.tos_pending = atomic_load_long(&tostat.tos_pending);
+	status.tos_readded = atomic_load_long(&tostat.tos_readded);
+	status.tos_rescheduled = atomic_load_long(&tostat.tos_rescheduled);
+	status.tos_run_softclock = atomic_load_long(&tostat.tos_run_softclock);
+	status.tos_run_thread = atomic_load_long(&tostat.tos_run_thread);
+	status.tos_scheduled = atomic_load_long(&tostat.tos_scheduled);
+	status.tos_softclocks = atomic_load_long(&tostat.tos_softclocks);
+	status.tos_thread_wakeups = atomic_load_long(&tostat.tos_thread_wakeups);
 
 	return sysctl_rdstruct(oldp, oldlenp, newp, &status, sizeof(status));
 }
