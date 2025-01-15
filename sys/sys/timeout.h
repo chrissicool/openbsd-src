@@ -27,6 +27,7 @@
 #ifndef _SYS_TIMEOUT_H_
 #define _SYS_TIMEOUT_H_
 
+#include <sys/mutex.h>
 #include <sys/time.h>
 
 struct circq {
@@ -36,6 +37,7 @@ struct circq {
 
 struct timeout {
 	struct circq to_list;			/* timeout queue, don't move */
+	struct mutex to_mtx;			/* mutex for this struct */
 	struct timespec to_abstime;		/* absolute time to run at */
 	void (*to_func)(void *);		/* function to call */
 	void *to_arg;				/* function argument */
@@ -90,6 +92,7 @@ int timeout_sysctl(void *, size_t *, void *, size_t);
 
 #define TIMEOUT_INITIALIZER_FLAGS(_fn, _arg, _kclock, _flags) {		\
 	.to_list = { NULL, NULL },					\
+	.to_mtx = MUTEX_INITIALIZER(IPL_HIGH),				\
 	.to_abstime = { .tv_sec = 0, .tv_nsec = 0 },			\
 	.to_func = (_fn),						\
 	.to_arg = (_arg),						\

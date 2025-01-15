@@ -199,8 +199,8 @@ struct lock_type timeout_spinlock_type = {
 void softclock(void *);
 void softclock_create_thread(void *);
 void softclock_process(struct circq *, int);
-void softclock_process_kclock_timeout(struct timeout *, int);
-void softclock_process_tick_timeout(struct timeout *, int);
+void softclock_process_kclock_timeout(struct timeout *, struct mutex *, int);
+void softclock_process_tick_timeout(struct timeout *, struct mutex *, int);
 void softclock_thread(void *);
 #ifdef MULTIPROCESSOR
 void softclock_thread_mp(void *);
@@ -208,7 +208,7 @@ void softclock_thread_mp(void *);
 void timeout_barrier_timeout(void *);
 uint32_t timeout_bucket(const struct timeout *);
 uint32_t timeout_maskwheel(uint32_t, const struct timespec *);
-void timeout_run(struct timeout_ctx *, struct timeout *);
+void timeout_run(struct timeout_ctx *, struct timeout *, struct mutex *);
 
 /*
  * The first thing in a struct timeout is its struct circq, so we
@@ -301,6 +301,7 @@ timeout_set_flags(struct timeout *to, void (*fn)(void *), void *arg, int kclock,
 	KASSERT(!ISSET(flags, ~(TIMEOUT_PROC | TIMEOUT_MPSAFE)));
 	KASSERT(kclock >= KCLOCK_NONE && kclock < KCLOCK_MAX);
 
+	mtx_init(&to->to_mtx, IPL_HIGH);
 	to->to_func = fn;
 	to->to_arg = arg;
 	to->to_kclock = kclock;
@@ -327,7 +328,8 @@ timeout_add(struct timeout *new, int to_ticks)
 	KASSERT(new->to_kclock == KCLOCK_NONE);
 	KASSERT(to_ticks >= 0);
 
-	mtx_enter(&timeout_mutex);
+again:
+	mtx_enter(&new->to_mtx);
 
 	/* Initialize the time here, it won't change. */
 	old_time = new->to_time;
@@ -341,21 +343,31 @@ timeout_add(struct timeout *new, int to_ticks)
 	 */
 	if (ISSET(new->to_flags, TIMEOUT_ONQUEUE)) {
 		if (new->to_time - ticks < old_time - ticks) {
+			if (!mtx_enter_try(&timeout_mutex)) {
+				mtx_leave(&new->to_mtx);
+				goto again;
+			}
 			CIRCQ_REMOVE(&new->to_list);
 			CIRCQ_INSERT_TAIL(&timeout_new, &new->to_list);
+			mtx_leave(&timeout_mutex);
 		}
 		atomic_inc_long(&tostat.tos_readded);
 		ret = 0;
 	} else {
+		if (!mtx_enter_try(&timeout_mutex)) {
+			mtx_leave(&new->to_mtx);
+			goto again;
+		}
 		SET(new->to_flags, TIMEOUT_ONQUEUE);
 		CIRCQ_INSERT_TAIL(&timeout_new, &new->to_list);
+		mtx_leave(&timeout_mutex);
 	}
 #if NKCOV > 0
 	if (!kcov_cold)
 		new->to_process = curproc->p_p;
 #endif
+	mtx_leave(&new->to_mtx);
 	atomic_inc_long(&tostat.tos_added);
-	mtx_leave(&timeout_mutex);
 
 	return ret;
 }
@@ -444,7 +456,8 @@ timeout_abs_ts(struct timeout *to, const struct timespec *abstime)
 	struct timespec old_abstime;
 	int ret = 1;
 
-	mtx_enter(&timeout_mutex);
+again:
+	mtx_enter(&to->to_mtx);
 
 	KASSERT(ISSET(to->to_flags, TIMEOUT_INITIALIZED));
 	KASSERT(to->to_kclock == KCLOCK_UPTIME);
@@ -455,22 +468,31 @@ timeout_abs_ts(struct timeout *to, const struct timespec *abstime)
 
 	if (ISSET(to->to_flags, TIMEOUT_ONQUEUE)) {
 		if (timespeccmp(abstime, &old_abstime, <)) {
+			if (!mtx_enter_try(&timeout_mutex)) {
+				mtx_leave(&to->to_mtx);
+				goto again;
+			}
 			CIRCQ_REMOVE(&to->to_list);
 			CIRCQ_INSERT_TAIL(&timeout_new, &to->to_list);
+			mtx_leave(&timeout_mutex);
 		}
 		atomic_inc_long(&tostat.tos_readded);
 		ret = 0;
 	} else {
+		if (!mtx_enter_try(&timeout_mutex)) {
+			mtx_leave(&to->to_mtx);
+			goto again;
+		}
 		SET(to->to_flags, TIMEOUT_ONQUEUE);
 		CIRCQ_INSERT_TAIL(&timeout_new, &to->to_list);
+		mtx_leave(&timeout_mutex);
 	}
 #if NKCOV > 0
 	if (!kcov_cold)
 		to->to_process = curproc->p_p;
 #endif
+	mtx_leave(&to->to_mtx);
 	atomic_inc_long(&tostat.tos_added);
-
-	mtx_leave(&timeout_mutex);
 
 	return ret;
 }
@@ -480,16 +502,22 @@ timeout_del(struct timeout *to)
 {
 	int ret = 0;
 
-	mtx_enter(&timeout_mutex);
+again:
+	mtx_enter(&to->to_mtx);
 	if (ISSET(to->to_flags, TIMEOUT_ONQUEUE)) {
+		if (!mtx_enter_try(&timeout_mutex)) {
+			mtx_leave(&to->to_mtx);
+			goto again;
+		}
 		CIRCQ_REMOVE(&to->to_list);
+		mtx_leave(&timeout_mutex);
 		CLR(to->to_flags, TIMEOUT_ONQUEUE);
 		atomic_inc_long(&tostat.tos_cancelled);
 		ret = 1;
 	}
 	CLR(to->to_flags, TIMEOUT_TRIGGERED);
+	mtx_leave(&to->to_mtx);
 	atomic_inc_long(&tostat.tos_deleted);
-	mtx_leave(&timeout_mutex);
 
 	return ret;
 }
@@ -515,7 +543,9 @@ timeout_barrier(struct timeout *to)
 	struct cond c;
 	int flags;
 
+	mtx_enter(&to->to_mtx);
 	flags = to->to_flags & (TIMEOUT_PROC | TIMEOUT_MPSAFE);
+	mtx_leave(&to->to_mtx);
 	timeout_sync_order(ISSET(flags, TIMEOUT_PROC));
 
 	timeout_set_flags(&barrier, timeout_barrier_timeout, &c, KCLOCK_NONE,
@@ -539,9 +569,11 @@ timeout_barrier(struct timeout *to)
 		return;
 	}
 
+	mtx_enter(&barrier.to_mtx);
 	barrier.to_time = ticks;
 	SET(barrier.to_flags, TIMEOUT_ONQUEUE);
 	CIRCQ_INSERT_HEAD(tctx->tctx_todo, &barrier.to_list);
+	mtx_leave(&barrier.to_mtx);
 	mtx_leave(&timeout_mutex);
 
 	/*
@@ -680,14 +712,19 @@ timeout_hardclock_update(void)
 		softintr_schedule(softclock_si);
 }
 
+/*
+ * Unlocks the timeout struct and executes its callback function.  That allows
+ * the timeout callback to re-add itself.  Do not touch 'to' after return from
+ * this function.
+ */
 void
-timeout_run(struct timeout_ctx *tctx, struct timeout *to)
+timeout_run(struct timeout_ctx *tctx, struct timeout *to, struct mutex *mtx)
 {
 	void (*fn)(void *);
 	void *arg;
 	int needsproc;
 
-	MUTEX_ASSERT_LOCKED(&timeout_mutex);
+	KASSERT(&to->to_mtx == mtx);
 
 	CLR(to->to_flags, TIMEOUT_ONQUEUE);
 	SET(to->to_flags, TIMEOUT_TRIGGERED);
@@ -700,7 +737,9 @@ timeout_run(struct timeout_ctx *tctx, struct timeout *to)
 #endif
 
 	tctx->tctx_running = to;
+	mtx_leave(mtx);
 	mtx_leave(&timeout_mutex);
+
 	timeout_sync_enter(needsproc);
 #if NKCOV > 0
 	kcov_remote_enter(KCOV_REMOTE_COMMON, kcov_process);
@@ -715,7 +754,7 @@ timeout_run(struct timeout_ctx *tctx, struct timeout *to)
 }
 
 void
-softclock_process_kclock_timeout(struct timeout *to, int new)
+softclock_process_kclock_timeout(struct timeout *to, struct mutex *mtx, int new)
 {
 	struct kclock *kc = &timeout_kclock[to->to_kclock];
 
@@ -725,6 +764,7 @@ softclock_process_kclock_timeout(struct timeout *to, int new)
 			atomic_inc_long(&tostat.tos_rescheduled);
 		CIRCQ_INSERT_TAIL(&timeout_wheel_kc[timeout_bucket(to)],
 		    &to->to_list);
+		mtx_leave(mtx);
 		return;
 	}
 	if (!new && timespeccmp(&to->to_abstime, &kc->kc_late, <=))
@@ -736,14 +776,15 @@ softclock_process_kclock_timeout(struct timeout *to, int new)
 		else
 #endif
 			CIRCQ_INSERT_TAIL(&timeout_proc, &to->to_list);
+		mtx_leave(mtx);
 		return;
 	}
-	timeout_run(&timeout_ctx_si, to);
+	timeout_run(&timeout_ctx_si, to, mtx);
 	atomic_inc_long(&tostat.tos_run_softclock);
 }
 
 void
-softclock_process_tick_timeout(struct timeout *to, int new)
+softclock_process_tick_timeout(struct timeout *to, struct mutex *mtx, int new)
 {
 	int delta = to->to_time - ticks;
 
@@ -752,6 +793,7 @@ softclock_process_tick_timeout(struct timeout *to, int new)
 		if (!new)
 			atomic_inc_long(&tostat.tos_rescheduled);
 		CIRCQ_INSERT_TAIL(&BUCKET(delta, to->to_time), &to->to_list);
+		mtx_leave(mtx);
 		return;
 	}
 	if (!new && delta < 0)
@@ -763,9 +805,10 @@ softclock_process_tick_timeout(struct timeout *to, int new)
 		else
 #endif
 			CIRCQ_INSERT_TAIL(&timeout_proc, &to->to_list);
+		mtx_leave(mtx);
 		return;
 	}
-	timeout_run(&timeout_ctx_si, to);
+	timeout_run(&timeout_ctx_si, to, mtx);
 	atomic_inc_long(&tostat.tos_run_softclock);
 }
 
@@ -778,11 +821,12 @@ softclock_process(struct circq *todo, int new)
 
 	while (!CIRCQ_EMPTY(todo)) {
 		to = timeout_from_circq(CIRCQ_FIRST(todo));
+		mtx_enter(&to->to_mtx);
 		CIRCQ_REMOVE(&to->to_list);
 		if (to->to_kclock == KCLOCK_NONE)
-			softclock_process_tick_timeout(to, new);
+			softclock_process_tick_timeout(to, &to->to_mtx, new);
 		else if (to->to_kclock == KCLOCK_UPTIME)
-			softclock_process_kclock_timeout(to, new);
+			softclock_process_kclock_timeout(to, &to->to_mtx, new);
 		else {
 			panic("%s: invalid to_clock: %d",
 			    __func__, to->to_kclock);
@@ -808,6 +852,7 @@ softclock(void *arg)
 	softclock_process(&timeout_todo, 0);
 	softclock_process(&timeout_new, 1);
 	atomic_inc_long(&tostat.tos_softclocks);
+
 	needsproc = !CIRCQ_EMPTY(&timeout_proc);
 #ifdef MULTIPROCESSOR
 	need_proc_mp = !CIRCQ_EMPTY(&timeout_proc_mp);
@@ -851,8 +896,9 @@ softclock_thread_run(struct timeout_ctx *tctx)
 		atomic_inc_long(&tostat.tos_thread_wakeups);
 		while (!CIRCQ_EMPTY(todo)) {
 			to = timeout_from_circq(CIRCQ_FIRST(todo));
+			mtx_enter(&to->to_mtx);
 			CIRCQ_REMOVE(&to->to_list);
-			timeout_run(tctx, to);
+			timeout_run(tctx, to, &to->to_mtx);
 			atomic_inc_long(&tostat.tos_run_thread);
 		}
 		mtx_leave(&timeout_mutex);
@@ -910,6 +956,7 @@ timeout_adjust_ticks(int adj)
 		p = CIRCQ_FIRST(&timeout_wheel[b]);
 		while (p != &timeout_wheel[b]) {
 			to = timeout_from_circq(p);
+			mtx_enter(&to->to_mtx);
 			p = CIRCQ_FIRST(p);
 
 			/* when moving a timeout forward need to reinsert it */
@@ -917,6 +964,7 @@ timeout_adjust_ticks(int adj)
 				to->to_time = new_ticks;
 			CIRCQ_REMOVE(&to->to_list);
 			CIRCQ_INSERT_TAIL(&timeout_todo, &to->to_list);
+			mtx_leave(&to->to_mtx);
 		}
 	}
 	ticks = new_ticks;
