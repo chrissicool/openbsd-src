@@ -198,6 +198,7 @@ struct lock_type timeout_spinlock_type = {
 
 void softclock(void *);
 void softclock_create_thread(void *);
+void softclock_process(struct circq *, int);
 void softclock_process_kclock_timeout(struct timeout *, int);
 void softclock_process_tick_timeout(struct timeout *, int);
 void softclock_thread(void *);
@@ -768,33 +769,16 @@ softclock_process_tick_timeout(struct timeout *to, int new)
 	atomic_inc_long(&tostat.tos_run_softclock);
 }
 
-/*
- * Timeouts are processed here instead of timeout_hardclock_update()
- * to avoid doing any more work at IPL_CLOCK than absolutely necessary.
- * Down here at IPL_SOFTCLOCK other interrupts can be serviced promptly
- * so the system remains responsive even if there is a surge of timeouts.
- */
 void
-softclock(void *arg)
+softclock_process(struct circq *todo, int new)
 {
-	struct timeout *first_new, *to;
-	int needsproc, new;
-#ifdef MULTIPROCESSOR
-	int need_proc_mp;
-#endif
+	struct timeout *to;
 
-	first_new = NULL;
-	new = 0;
+	MUTEX_ASSERT_LOCKED(&timeout_mutex);
 
-	mtx_enter(&timeout_mutex);
-	if (!CIRCQ_EMPTY(&timeout_new))
-		first_new = timeout_from_circq(CIRCQ_FIRST(&timeout_new));
-	CIRCQ_CONCAT(&timeout_todo, &timeout_new);
-	while (!CIRCQ_EMPTY(&timeout_todo)) {
-		to = timeout_from_circq(CIRCQ_FIRST(&timeout_todo));
+	while (!CIRCQ_EMPTY(todo)) {
+		to = timeout_from_circq(CIRCQ_FIRST(todo));
 		CIRCQ_REMOVE(&to->to_list);
-		if (to == first_new)
-			new = 1;
 		if (to->to_kclock == KCLOCK_NONE)
 			softclock_process_tick_timeout(to, new);
 		else if (to->to_kclock == KCLOCK_UPTIME)
@@ -804,6 +788,25 @@ softclock(void *arg)
 			    __func__, to->to_kclock);
 		}
 	}
+}
+
+/*
+ * Timeouts are processed here instead of timeout_hardclock_update()
+ * to avoid doing any more work at IPL_CLOCK than absolutely necessary.
+ * Down here at IPL_SOFTCLOCK other interrupts can be serviced promptly
+ * so the system remains responsive even if there is a surge of timeouts.
+ */
+void
+softclock(void *arg)
+{
+	int needsproc;
+#ifdef MULTIPROCESSOR
+	int need_proc_mp;
+#endif
+
+	mtx_enter(&timeout_mutex);
+	softclock_process(&timeout_todo, 0);
+	softclock_process(&timeout_new, 1);
 	atomic_inc_long(&tostat.tos_softclocks);
 	needsproc = !CIRCQ_EMPTY(&timeout_proc);
 #ifdef MULTIPROCESSOR
