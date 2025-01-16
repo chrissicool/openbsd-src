@@ -109,7 +109,7 @@ roundrobin(struct clockrequest *cr, void *cf, void *arg)
 		need_resched(ci);
 }
 
-
+struct timeout loadavg_to = TIMEOUT_INITIALIZER(update_loadavg, NULL);
 
 /*
  * update_loadav: compute a tenex style load average of a quantity on
@@ -118,7 +118,6 @@ roundrobin(struct clockrequest *cr, void *cf, void *arg)
 void
 update_loadavg(void *unused)
 {
-	static struct timeout to = TIMEOUT_INITIALIZER(update_loadavg, NULL);
 	CPU_INFO_ITERATOR cii;
 	struct cpu_info *ci;
 	struct cpuset set;
@@ -135,7 +134,7 @@ update_loadavg(void *unused)
 		    nrun * FSCALE * (FSCALE - cexp[i])) >> FSHIFT;
 	}
 
-	timeout_add_sec(&to, 5);
+	timeout_add_sec(&loadavg_to, 5);
 }
 
 /*
@@ -222,6 +221,7 @@ fixpt_t	ccpu = 0.95122942450071400909 * FSCALE;		/* exp(-1/20) */
  * (more general) method of calculating the %age of CPU used by a process.
  */
 #define	CCPU_SHIFT	11
+struct timeout schedcpu_to = TIMEOUT_INITIALIZER(schedcpu, NULL);
 
 /*
  * Recompute process priorities, every second.
@@ -229,7 +229,6 @@ fixpt_t	ccpu = 0.95122942450071400909 * FSCALE;		/* exp(-1/20) */
 void
 schedcpu(void *unused)
 {
-	static struct timeout to = TIMEOUT_INITIALIZER(schedcpu, NULL);
 	fixpt_t loadfac = loadfactor(averunnable.ldavg[0]), pctcpu;
 	struct proc *p;
 	unsigned int newcpu;
@@ -282,7 +281,7 @@ schedcpu(void *unused)
 		SCHED_UNLOCK();
 	}
 	wakeup(&lbolt);
-	timeout_add_sec(&to, 1);
+	timeout_add_sec(&schedcpu_to, 1);
 }
 
 /*
