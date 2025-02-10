@@ -131,6 +131,7 @@ struct bt_arg {
 		B_AT_TMEMBER,			/* tuple member $t.2 */
 		B_AT_NIL,			/* empty value */
 
+		B_AT_BI_CPID,
 		B_AT_BI_PID,
 		B_AT_BI_TID,
 		B_AT_BI_COMM,

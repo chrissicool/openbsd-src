@@ -23,6 +23,7 @@
 .Sh SYNOPSIS
 .Nm btrace
 .Op Fl lnv
+.Op Fl c Ar command
 .Op Fl M Ar elements
 .Op Fl p Ar elffile
 .Ar programfile | Fl e Ar program
@@ -44,6 +45,18 @@ using the interface described in
 .Pp
 The options are as follows:
 .Bl -tag -width Ds
+.It Fl c Ar command
+Execute command line
+.Ar command
+as child process.
+The program can access the child's PID with the
+.Ar cpid
+builtin.
+The child process runs with the same privileges as
+.Nm .
+When the child terminates,
+.Nm
+also quits.
 .It Fl e Ar program
 Execute the
 .Ar program

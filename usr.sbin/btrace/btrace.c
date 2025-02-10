@@ -20,8 +20,10 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/queue.h>
+#include <sys/wait.h>
 
 #include <assert.h>
+#include <ctype.h>
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -55,6 +57,7 @@
 
 __dead void		 usage(void);
 char			*read_btfile(const char *, size_t *);
+void			 cpid_args(const char *, char ***, int *);
 
 /*
  * Retrieve & parse probe information.
@@ -128,6 +131,9 @@ int			 nargs = 0;
 int			 verbose = 0;
 int			 dtfd;
 volatile sig_atomic_t	 quit_pending;
+extern char		**environ;
+
+pid_t			 cpid;
 
 static void
 signal_handler(int sig)
@@ -139,16 +145,19 @@ signal_handler(int sig)
 int
 main(int argc, char *argv[])
 {
-	int fd = -1, ch, error = 0;
-	const char *filename = NULL, *btscript = NULL, *e;
+	int fd = -1, ch, error = 0, pipefd[2];
+	const char *filename = NULL, *btscript = NULL, *cmd = NULL, *e;
 	int showprobes = 0, noaction = 0;
 	unsigned long nelems = DT_MIN_EVTRING_SIZE;
 	size_t btslen = 0;
 
 	setlocale(LC_ALL, "");
 
-	while ((ch = getopt(argc, argv, "e:lM:np:v")) != -1) {
+	while ((ch = getopt(argc, argv, "c:e:lM:np:v")) != -1) {
 		switch (ch) {
+		case 'c':
+			cmd = optarg;
+			break;
 		case 'e':
 			btscript = optarg;
 			btslen = strlen(btscript);
@@ -182,6 +191,41 @@ main(int argc, char *argv[])
 	if (argc > 0 && btscript == NULL)
 		filename = argv[0];
 
+	if (cmd && !noaction) {
+		if (pipe(pipefd) == -1)
+			err(1, "pipe");
+		if ((cpid = fork()) == -1)
+			err(1, "fork");
+		if (cpid == 0) {
+			char **cmdargv, p;
+			int cmdargc;
+
+			close(pipefd[1]);
+			cpid_args(cmd, &cmdargv, &cmdargc);
+			while (read(pipefd[0], &p, 1) < 1)
+				;
+			close(pipefd[0]);
+			execve(cmdargv[0], cmdargv, environ);
+		} else {
+			struct sigaction sa;
+
+			close(pipefd[0]);
+
+			debug("cpid[%d]: '%s'\n", cpid, cmd);
+			memset(&sa, 0, sizeof(sa));
+			sigemptyset(&sa.sa_mask);
+			sa.sa_flags = 0;
+			sa.sa_handler = signal_handler;
+			if (sigaction(SIGCHLD, &sa, NULL))
+				err(1, "sigaction");
+
+			if (waitpid(cpid, &ch, WNOHANG) == cpid) {
+				debug("cpid[%d]: dead already\n", cpid);
+				quit_pending = 1;
+			}
+		}
+	}
+
 	 /* Cannot pledge due to special ioctl()s */
 	if (unveil(__PATH_DEVDT, "r") == -1)
 		err(1, "unveil %s", __PATH_DEVDT);
@@ -209,7 +253,7 @@ main(int argc, char *argv[])
 	if (btscript != NULL) {
 		error = btparse(btscript, btslen, filename, 1);
 		if (error)
-			return error;
+			goto cleanup;
 	}
 
 	if (noaction)
@@ -227,19 +271,30 @@ main(int argc, char *argv[])
 		dtpi_print_list(fd);
 	}
 
+	if (cmd) {
+		while (write(pipefd[1], " ", 1) != 1)
+			;
+		close(pipefd[1]);
+	}
+
 	if (!TAILQ_EMPTY(&g_rules))
 		rules_do(fd, nelems);
 
+cleanup:
 	if (fd != -1)
 		close(fd);
 
+	if (cpid > 0 && waitpid(cpid, &ch, WNOHANG) != cpid) {
+		debug("cpid[%d]: child still running, killing it.\n", cpid);
+		kill(cpid, SIGTERM);
+	}
 	return error;
 }
 
 __dead void
 usage(void)
 {
-	fprintf(stderr, "usage: %s [-lnv] [-p elffile] "
+	fprintf(stderr, "usage: %s [-lnv] [-c command] [-p elffile] "
 	    "programfile | -e program [argument ...]\n", getprogname());
 	exit(1);
 }
@@ -271,6 +326,53 @@ read_btfile(const char *filename, size_t *len)
 	fclose(fp);
 	*len = fsize;
 	return fcontent;
+}
+
+void
+cpid_args(const char *str, char ***argv, int *argc)
+{
+	char **av, *s, *token;
+	int i, count = 0;
+
+	s = strdup(str);
+	if (s == NULL)
+		err(1, "strdup");
+
+	token = strtok(s, " \t");
+	while (token != NULL) {
+		count++;
+		token = strtok(NULL, " \t");
+	}
+	free(s);
+
+	if (count == 0)
+		count = 1;
+
+	av = malloc(sizeof(void *) * (count + 1));
+	s = strdup(str);
+	if (s == NULL)
+		err(1, "strdup");
+
+	if (count == 1) {
+		av[0] = s;
+		av[1] = NULL;
+		goto out;
+	}
+
+	token = strtok(s, " \t");
+	i = 0;
+	for (i = 0; i < count && token != NULL; i++) {
+		av[i] = strdup(token);
+		if (av[i] == NULL)
+			err(1, "strdup");
+		token = strtok(NULL, " \t");
+	}
+	av[count] = NULL;
+	free(s);
+
+out:
+	*argc = count;
+	*argv = av;
 }
 
 void
@@ -1223,6 +1325,7 @@ stmt_store(struct bt_stmt *bs, struct dt_evt *dtev)
 		bv->bv_value = baeval(ba, dtev);
 		bv->bv_type = B_VT_TUPLE;
 		break;
+	case B_AT_BI_CPID:
 	case B_AT_BI_PID:
 	case B_AT_BI_TID:
 	case B_AT_BI_CPU:
@@ -1375,6 +1478,7 @@ baeval(struct bt_arg *bval, struct dt_evt *dtev)
 		ba = baeval(ba_read(bval), NULL);
 		break;
 	case B_AT_LONG:
+	case B_AT_BI_CPID:
 	case B_AT_BI_PID:
 	case B_AT_BI_TID:
 	case B_AT_BI_CPU:
@@ -1626,6 +1730,8 @@ ba_name(struct bt_arg *ba)
 	case B_AT_MAP:
 	case B_AT_HIST:
 		break;
+	case B_AT_BI_CPID:
+		return "cpid";
 	case B_AT_BI_PID:
 		return "pid";
 	case B_AT_BI_TID:
@@ -1763,6 +1869,9 @@ ba2long(struct bt_arg *ba, struct dt_evt *dtev)
 	case B_AT_NIL:
 		val = 0L;
 		break;
+	case B_AT_BI_CPID:
+		val = cpid;
+		break;
 	case B_AT_BI_PID:
 		val = dtev->dtev_pid;
 		break;
@@ -1849,6 +1958,10 @@ ba2str(struct bt_arg *ba, struct dt_evt *dtev)
 		break;
 	case B_AT_BI_CPU:
 		snprintf(buf, sizeof(buf), "%u", dtev->dtev_cpu);
+		str = buf;
+		break;
+	case B_AT_BI_CPID:
+		snprintf(buf, sizeof(buf), "%d", cpid);
 		str = buf;
 		break;
 	case B_AT_BI_PID:
@@ -1945,6 +2058,7 @@ ba2flags(struct bt_arg *ba)
 		flags |= DTEVT_EXECNAME;
 		break;
 	case B_AT_BI_CPU:
+	case B_AT_BI_CPID:
 	case B_AT_BI_PID:
 	case B_AT_BI_TID:
 	case B_AT_BI_NSECS:

@@ -759,6 +759,7 @@ lookup(char *s)
 		{ "clear",	MFUNC,		B_AC_CLEAR },
 		{ "comm",	BUILTIN,	B_AT_BI_COMM },
 		{ "count",	MOP0, 		B_AT_MF_COUNT },
+		{ "cpid",	BUILTIN,	B_AT_BI_CPID },
 		{ "cpu",	BUILTIN,	B_AT_BI_CPU },
 		{ "delete",	F_DELETE,	B_AC_DELETE },
 		{ "else",	ELSE,		0 },
