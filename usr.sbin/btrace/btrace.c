@@ -843,18 +843,22 @@ builtin_nsecs(struct dt_evt *dtev)
 const char *
 builtin_stack(struct dt_evt *dtev, int kernel, unsigned long offset)
 {
-	struct stacktrace *st = &dtev->dtev_kstack;
+	struct stacktrace *st;
+	struct syms *elf;
 	static char buf[4096];
-	const char *last = "\nkernel\n";
+	const char *last;
 	char *bp;
 	size_t i;
 	int sz;
 
-	if (!kernel) {
+	if (kernel) {
+		st = &dtev->dtev_kstack;
+		elf = kelf;
+		last = "kernel";
+	} else {
 		st = &dtev->dtev_ustack;
-		last = "\nuserland\n";
-	} else if (st->st_count == 0) {
-		return "\nuserland\n";
+		elf = uelf;
+		last = "userland";
 	}
 
 	buf[0] = '\0';
@@ -863,12 +867,7 @@ builtin_stack(struct dt_evt *dtev, int kernel, unsigned long offset)
 	for (i = 0; i < st->st_count; i++) {
 		int l;
 
-		if (!kernel)
-			l = kelf_snprintsym(uelf, bp, sz - 1, st->st_pc[i],
-			    offset);
-		else
-			l = kelf_snprintsym(kelf, bp, sz - 1, st->st_pc[i],
-			    offset);
+		l = kelf_snprintsym(elf, bp, sz - 1, st->st_pc[i], offset);
 		if (l < 0)
 			break;
 		if (l >= sz - 1) {
