@@ -834,7 +834,7 @@ allowed_in_string(int x)
 static int
 skip(void)
 {
-	int c;
+	int c, shebang = 0;
 
 again:
 	/* skip whitespaces */
@@ -849,6 +849,8 @@ again:
 	if ((c == '/' && peek() == '/') ||
 	    (yylval.lineno == 1 && yylval.colno == 1 && c == '#' &&
 	     peek() == '!')) {
+		if (c == '#' && peek() == '!')
+			shebang = 1;
 		for (c = lgetc(); c != EOF; c = lgetc()) {
 			if (c == '\n') {
 				yylval.lineno++;
@@ -856,6 +858,29 @@ again:
 				goto again;
 			}
 		}
+	}
+
+	/*
+	 * Allow line 2 to start with 'exec' for parameter forwarding.
+	 *  1 #!/bin/sh
+	 *  2 exec /usr/sbin/btrace "$@" "$0"
+	 */
+	if (yylval.lineno == 2 && shebang == 1 && c == 'e') {
+		const char *exec = "exec ";
+		size_t len = strlen(exec);
+
+		lungetc();
+		if (pbuf != NULL && pindex + len + 1 < plen &&
+		    strncmp(&pbuf[pindex], exec, len) == 0) {
+			for (c = lgetc(); c != EOF; c = lgetc()) {
+				if (c == '\n') {
+					yylval.lineno++;
+					yylval.colno = 0;
+					goto again;
+				}
+			}
+		}
+		c = lgetc();
 	}
 
 	/* skip multi line comments */
