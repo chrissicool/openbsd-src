@@ -292,6 +292,7 @@ stacktrace_save_utrace(struct stacktrace *st)
 {
 	struct callframe f, *frame, *lastframe;
 	struct pcb *pcb = curpcb;
+	caddr_t onfault;
 
 	st->st_count = 0;
 
@@ -302,7 +303,11 @@ stacktrace_save_utrace(struct stacktrace *st)
 	frame = __builtin_frame_address(0);
 	KASSERT(INKERNEL(frame));
 
+	/* CAREFUL: Might be in interrupt context and/or in copy(9). */
 	curcpu()->ci_inatomic++;
+	onfault = pcb->pcb_onfault;
+	pcb->pcb_onfault = NULL;
+
 	/*
 	 * skip kernel frames
 	 */
@@ -323,6 +328,8 @@ stacktrace_save_utrace(struct stacktrace *st)
 		st->st_pc[st->st_count++] = f.f_retaddr;
 		frame = f.f_frame;
 	}
+
+	pcb->pcb_onfault = onfault;
 	curcpu()->ci_inatomic--;
 }
 
