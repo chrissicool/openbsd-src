@@ -35,18 +35,25 @@ struct circq {
 	struct circq *prev;		/* previous element */
 };
 
+/*
+ * Locks used to protect members of this object:
+ *
+ *	I	immutable after initialization
+ *	T	timeout_mutex
+ *	m	to_mtx
+ */
 struct timeout {
-	struct circq to_list;			/* timeout queue, don't move */
+	struct circq to_list;			/* [T] timeout queue, don't move */
 	struct mutex to_mtx;			/* mutex for this struct */
-	struct timespec to_abstime;		/* absolute time to run at */
-	void (*to_func)(void *);		/* function to call */
-	void *to_arg;				/* function argument */
+	struct timespec to_abstime;		/* [m] absolute time to run at */
+	void (*to_func)(void *);		/* [I] function to call */
+	void *to_arg;				/* [I] function argument */
 #if 1 /* NKCOV > 0 */
-	struct process *to_process;		/* kcov identifier */
+	struct process *to_process;		/* [m] kcov identifier */
 #endif
-	int to_time;				/* ticks on event */
-	int to_flags;				/* misc flags */
-	int to_kclock;				/* abstime's kernel clock */
+	int to_time;				/* [m] ticks on event */
+	int to_flags;				/* [m] misc flags */
+	int to_kclock;				/* [I] abstime's kernel clock */
 };
 
 /*
