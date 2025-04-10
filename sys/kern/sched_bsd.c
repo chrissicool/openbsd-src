@@ -355,7 +355,7 @@ mi_switch(void)
 	struct schedstate_percpu *spc = &curcpu()->ci_schedstate;
 	struct proc *p = curproc;
 	struct proc *nextproc, *prevproc;
-	int oldipl;
+	int oldipl, s;
 #ifdef MULTIPROCESSOR
 	int hold_count;
 #endif
@@ -367,7 +367,10 @@ mi_switch(void)
 	KASSERT(curcpu()->ci_mutex_level == 1 || (panicstr || db_active));
 #endif
 
-	/* preserve old IPL level so we can switch back to that */
+	/*
+	 * curproc's mutex is the only one taken right now. Preserve its IPL
+	 * so we can switch back to that later.
+	 */
 	oldipl = MUTEX_OLDIPL(&p->p_mtx);
 
 #ifdef MULTIPROCESSOR
@@ -402,9 +405,12 @@ mi_switch(void)
 	SCHED_LOCK();
 	nextproc = sched_chooseproc();
 	MUTEX_ASSERT_LOCKED(&nextproc->p_mtx);
+	/* Preserve raised IPL. */
+	s = MUTEX_OLDIPL(&sched_lock);
+	SCHED_UNLOCK();
 
 	if (p != nextproc) {
-		uvmexp.swtch++;
+		atomic_inc_int(&uvmexp.swtch);
 		TRACEPOINT(sched, off__cpu, nextproc->p_tid + THREAD_PID_OFFSET,
 		    nextproc->p_p->ps_pid);
 		prevproc = cpu_switchto(p, nextproc);
@@ -412,8 +418,8 @@ mi_switch(void)
 
 		/* Release the previous proc, we are done with it. */
 		if (prevproc != NULL) {
-			/* Maintain sched_lock's IPL. We lower it below.*/
-			MUTEX_OLDIPL(&prevproc->p_mtx) = MUTEX_OLDIPL(&sched_lock);
+			/* Keep IPL raised. curproc's mutex lowers it later. */
+			MUTEX_OLDIPL(&prevproc->p_mtx) = s;
 			mtx_leave(&prevproc->p_mtx);
 		}
 	} else {
@@ -423,11 +429,9 @@ mi_switch(void)
 
 	clear_resched(curcpu());
 
-	SCHED_ASSERT_LOCKED();
-	SCHED_UNLOCK();
 	SCHED_ASSERT_UNLOCKED();
 
-	/* Restore proc's IPL. */
+	/* Restore curproc's original IPL. */
 	MUTEX_OLDIPL(&p->p_mtx) = oldipl;
 	mtx_leave(&p->p_mtx);
 

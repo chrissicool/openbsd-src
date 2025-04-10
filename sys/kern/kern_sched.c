@@ -255,8 +255,8 @@ sched_toidle(void)
 		TRACEPOINT(sched, off__cpu, idle->p_tid + THREAD_PID_OFFSET,
 		    idle->p_p->ps_pid);
 
-	SCHED_LOCK();
-	uvmexp.swtch++;
+	atomic_inc_int(&uvmexp.swtch);
+
 	cpu_switchto(NULL, idle);
 	panic("cpu_switchto returned");
 }
@@ -360,8 +360,11 @@ restart:
 		if (p == NULL)
 			panic("no idleproc set on CPU%d",
 			    CPU_INFO_UNIT(curcpu()));
-		if (p != curproc)
-			mtx_enter_try(&p->p_mtx);
+		lock = p != curproc;
+		if (lock && !mtx_enter_try(&p->p_mtx)) {
+			SCHED_RELOCK();
+			goto restart;
+		}
 		p->p_stat = SRUN;
 		KASSERT(p->p_wchan == NULL);
 		return (p);
@@ -385,8 +388,11 @@ again:
 		if (p == NULL)
 			panic("no idleproc set on CPU%d",
 			    CPU_INFO_UNIT(curcpu()));
-		if (p != curproc)
-			mtx_enter_try(&p->p_mtx);
+		lock = p != curproc;
+		if (lock && !mtx_enter_try(&p->p_mtx)) {
+			SCHED_RELOCK();
+			goto again;
+		}
 		p->p_stat = SRUN;
 	}
 

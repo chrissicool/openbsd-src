@@ -701,18 +701,20 @@ proc_trampoline_mi(struct proc *prevproc)
 {
 	struct schedstate_percpu *spc = &curcpu()->ci_schedstate;
 	struct proc *p = curproc;
+	int s;
 
-	SCHED_ASSERT_LOCKED();
+	SCHED_ASSERT_UNLOCKED();
 	clear_resched(curcpu());
+
+	s = splsched();
 	if (prevproc != NULL) {
-		MUTEX_OLDIPL(&prevproc->p_mtx) = MUTEX_OLDIPL(&sched_lock);
+		MUTEX_OLDIPL(&prevproc->p_mtx) = s;
 		mtx_leave(&prevproc->p_mtx);
 	}
-	mtx_leave(&sched_lock);
+	MUTEX_OLDIPL(&p->p_mtx) = s;
 	mtx_leave(&p->p_mtx);
 	spl0();
 
-	SCHED_ASSERT_UNLOCKED();
 	KERNEL_ASSERT_UNLOCKED();
 	assertwaitok();
 	smr_idle();
