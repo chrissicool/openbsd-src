@@ -71,15 +71,24 @@ int	sleep_signal_check(struct proc *, int);
  */
 #define TABLESIZE	128
 #define LOOKUP(x)	(((long)(x) >> 8) & (TABLESIZE - 1))
-TAILQ_HEAD(slpque,proc) slpque[TABLESIZE];
+struct slpque {
+	struct mutex			sq_mtx;
+	TAILQ_HEAD(, proc)		sq_slpque;
+};
+
+struct slpque slpque[TABLESIZE];
 
 void
 sleep_queue_init(void)
 {
+	struct slpque *qp;
 	int i;
 
-	for (i = 0; i < TABLESIZE; i++)
-		TAILQ_INIT(&slpque[i]);
+	for (i = 0; i < TABLESIZE; i++) {
+		qp = &slpque[i];
+		mtx_init(&qp->sq_mtx, IPL_SCHED);
+		TAILQ_INIT(&qp->sq_slpque);
+	}
 }
 
 /*
@@ -330,6 +339,7 @@ void
 sleep_setup(const volatile void *ident, int prio, const char *wmesg)
 {
 	struct proc *p = curproc;
+	struct slpque *qp = &slpque[LOOKUP(ident)];
 
 #ifdef DIAGNOSTIC
 	if (p->p_flag & P_CANTSLEEP)
@@ -356,9 +366,9 @@ sleep_setup(const volatile void *ident, int prio, const char *wmesg)
 		atomic_setbits_int(&p->p_flag, P_SINTR);
 	p->p_stat = SSLEEP;
 
-	SCHED_LOCK();
-	TAILQ_INSERT_TAIL(&slpque[LOOKUP(ident)], p, p_runq);
-	SCHED_UNLOCK();
+	mtx_enter(&qp->sq_mtx);
+	TAILQ_INSERT_TAIL(&qp->sq_slpque, p, p_slpq);
+	mtx_leave(&qp->sq_mtx);
 	mtx_leave(&p->p_mtx);
 }
 
@@ -592,12 +602,15 @@ endtsleep(void *arg)
 void
 unsleep(struct proc *p)
 {
+	struct slpque *qp;
+
 	MUTEX_ASSERT_LOCKED(&p->p_mtx);
 
 	if (p->p_wchan != NULL) {
-		SCHED_LOCK();
-		TAILQ_REMOVE(&slpque[LOOKUP(p->p_wchan)], p, p_runq);
-		SCHED_UNLOCK();
+		qp = &slpque[LOOKUP(p->p_wchan)];
+		mtx_enter(&qp->sq_mtx);
+		TAILQ_REMOVE(&qp->sq_slpque, p, p_slpq);
+		mtx_leave(&qp->sq_mtx);
 		p->p_wchan = NULL;
 		p->p_wmesg = NULL;
 		TRACEPOINT(sched, unsleep, p->p_tid + THREAD_PID_OFFSET,
@@ -611,7 +624,8 @@ unsleep(struct proc *p)
 void
 wakeup_n(const volatile void *ident, int n)
 {
-	struct slpque *qp, wakeq;
+	TAILQ_HEAD(, proc) wakeq;
+	struct slpque *qp;
 	struct proc *p;
 	struct proc *pnext;
 	int s;
@@ -619,14 +633,14 @@ wakeup_n(const volatile void *ident, int n)
 	TAILQ_INIT(&wakeq);
 
 	s = splsched();
-again:
-	SCHED_LOCK();
 	qp = &slpque[LOOKUP(ident)];
-	for (p = TAILQ_FIRST(qp); p != NULL && n != 0; p = pnext) {
-		pnext = TAILQ_NEXT(p, p_runq);
+again:
+	mtx_enter(&qp->sq_mtx);
+	for (p = TAILQ_FIRST(&qp->sq_slpque); p != NULL && n != 0; p = pnext) {
+		pnext = TAILQ_NEXT(p, p_slpq);
 
 		if (!mtx_enter_try(&p->p_mtx)) {
-			SCHED_UNLOCK();
+			mtx_leave(&qp->sq_mtx);
 			goto again;
 		}
 #ifdef DIAGNOSTIC
@@ -639,17 +653,17 @@ again:
 			continue;
 		}
 
-		TAILQ_REMOVE(qp, p, p_runq);
+		TAILQ_REMOVE(&qp->sq_slpque, p, p_slpq);
 		p->p_wchan = NULL;
 		p->p_wmesg = NULL;
-		TAILQ_INSERT_TAIL(&wakeq, p, p_runq);
+		TAILQ_INSERT_TAIL(&wakeq, p, p_slpq);
 		--n;
 		/* proc gets unlocked below */
 	}
-	SCHED_UNLOCK();
+	mtx_leave(&qp->sq_mtx);
 
 	while ((p = TAILQ_FIRST(&wakeq))) {
-		TAILQ_REMOVE(&wakeq, p, p_runq);
+		TAILQ_REMOVE(&wakeq, p, p_slpq);
 		TRACEPOINT(sched, unsleep, p->p_tid + THREAD_PID_OFFSET,
 		    p->p_p->ps_pid);
 		if (p->p_stat == SSLEEP)

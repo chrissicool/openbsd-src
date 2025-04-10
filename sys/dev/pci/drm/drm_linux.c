@@ -120,9 +120,7 @@ __set_current_state(int state)
 
 	KASSERT(state == TASK_RUNNING);
 	mtx_enter(&p->p_mtx);
-	SCHED_LOCK();
 	unsleep(p);
-	SCHED_UNLOCK();
 	p->p_stat = SONPROC;
 	atomic_clearbits_int(&p->p_flag, P_INSCHED);
 	mtx_leave(&p->p_mtx);

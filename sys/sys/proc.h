@@ -339,6 +339,7 @@ struct p_inentry {
  *	a	atomic
  *	I	immutable after creation
  *	S	scheduler lock
+ *	s	sleep queue lock
  *	U	uidinfolk
  *	l	read only reference, see lim_read_enter()
  *	o	owned (modified only) by this thread
@@ -348,7 +349,8 @@ struct p_inentry {
  *  Lock order: m > p > S
  */
 struct proc {
-	TAILQ_ENTRY(proc) p_runq;	/* [S] current run/sleep queue */
+	TAILQ_ENTRY(proc) p_runq;	/* [S] current run queue */
+	TAILQ_ENTRY(proc) p_slpq;	/* [s] current sleep queue */
 	LIST_ENTRY(proc) p_list;	/* List of all threads. */
 
 	struct	process *p_p;		/* [I] The process of this thread. */

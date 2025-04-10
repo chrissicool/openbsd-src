@@ -198,6 +198,8 @@ main(void *framep)
 	SCHED_LOCK_INIT();
 	mtx_init(&p->p_mtx, IPL_SCHED);
 
+	sleep_queue_init();
+
 	rw_obj_init();
 	uvm_init();
 	disk_init();		/* must come before autoconfiguration */
@@ -316,7 +318,6 @@ main(void *framep)
 
 	/* Initialize run queues */
 	sched_init_runqueues();
-	sleep_queue_init();
 	clockqueue_init(&curcpu()->ci_queue);
 	sched_init_cpu(curcpu());
 	p->p_cpu->ci_randseed = (arc4random() & 0x7fffffff) + 1;

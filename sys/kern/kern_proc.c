@@ -502,8 +502,9 @@ proc_printit(struct proc *p, const char *modif,
 	(*pr)("    wchan=%p, wmesg=%s, ps_single=%p scnt=%d ecnt=%d\n",
 	    p->p_wchan, (p->p_wchan && p->p_wmesg) ?  p->p_wmesg : "",
 	    p->p_p->ps_single, p->p_p->ps_suspendcnt, p->p_p->ps_exitcnt);
-	(*pr)("    forw=%p, list=%p,%p\n",
-	    TAILQ_NEXT(p, p_runq), p->p_list.le_next, p->p_list.le_prev);
+	(*pr)("    runq=%p, slpq=%p, list=%p,%p\n",
+	    TAILQ_NEXT(p, p_runq), TAILQ_NEXT(p, p_slpq),
+	    p->p_list.le_next, p->p_list.le_prev);
 	(*pr)("    process=%p user=%p, vmspace=%p\n",
 	    p->p_p, p->p_addr, p->p_vmspace);
 	(*pr)("    estcpu=%u, cpticks=%d, pctcpu=%u.%u, "
