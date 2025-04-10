@@ -106,8 +106,9 @@ struct smr_entry;
  * Per-CPU scheduler state.
  */
 struct schedstate_percpu {
+	struct mutex spc_mtx;
 	struct proc *spc_idleproc;	/* idle proc for this cpu */
-	TAILQ_HEAD(prochead, proc) spc_qs[SCHED_NQS];
+	TAILQ_HEAD(prochead, proc) spc_qs[SCHED_NQS]; /* [m] runqueues */
 	TAILQ_HEAD(,proc) spc_deadproc;
 	struct timespec spc_runtime;	/* time curproc started running */
 	volatile int spc_schedflags;	/* flags; see below */
@@ -120,9 +121,9 @@ struct schedstate_percpu {
 	struct clockintr spc_roundrobin;/* [o] roundrobin handle */
 	struct clockintr spc_statclock;	/* [o] statclock handle */
 
-	u_int spc_nrun;			/* procs on the run queues */
+	u_int spc_nrun;			/* [m] procs on the run queues */
 
-	volatile uint32_t spc_whichqs;
+	volatile uint32_t spc_whichqs;	/* [m] run queues in use */
 	volatile u_int spc_spinning;	/* this cpu is currently spinning */
 
 	SIMPLEQ_HEAD(, smr_entry) spc_deferred; /* deferred smr calls */

@@ -701,9 +701,7 @@ sys_sched_yield(struct proc *p, void *v, register_t *retval)
 
 	mtx_enter(&p->p_mtx);
 	p->p_ru.ru_nvcsw++;
-	SCHED_LOCK();
 	setrunqueue(p->p_cpu, p, newprio);
-	SCHED_UNLOCK();
 
 	mi_switch();
 	mtx_leave(&p->p_mtx);

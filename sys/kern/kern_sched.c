@@ -97,6 +97,7 @@ sched_init_cpu(struct cpu_info *ci)
 
 	TAILQ_INIT(&spc->spc_deadproc);
 	SIMPLEQ_INIT(&spc->spc_deferred);
+	mtx_init(&spc->spc_mtx, IPL_SCHED);
 
 	/*
 	 * Slight hack here until the cpuset code handles cpu_info
@@ -187,10 +188,10 @@ sched_idle(void *v)
 			if (spc->spc_schedflags & SPCF_SHOULDHALT &&
 			    (spc->spc_schedflags & SPCF_HALTED) == 0) {
 				cpuset_del(&sched_idle_cpus, ci);
-				SCHED_LOCK();
+				mtx_enter(&spc->spc_mtx);
 				atomic_setbits_int(&spc->spc_schedflags,
 				    spc->spc_whichqs ? 0 : SPCF_HALTED);
-				SCHED_UNLOCK();
+				mtx_leave(&spc->spc_mtx);
 				wakeup(spc);
 			}
 #endif
@@ -278,9 +279,10 @@ setrunqueue(struct cpu_info *ci, struct proc *p, uint8_t prio)
 	if (ci == NULL)
 		ci = sched_choosecpu(p);
 
+
+
 	KASSERT(ci != NULL);
 	MUTEX_ASSERT_LOCKED(&p->p_mtx);
-	SCHED_ASSERT_LOCKED();
 	KASSERT(p->p_wchan == NULL);
 	KASSERT(!ISSET(p->p_flag, P_INSCHED));
 
@@ -288,7 +290,9 @@ setrunqueue(struct cpu_info *ci, struct proc *p, uint8_t prio)
 	p->p_stat = SRUN;
 	p->p_runpri = prio;
 
-	spc = &p->p_cpu->ci_schedstate;
+	spc = &ci->ci_schedstate;
+	mtx_enter(&spc->spc_mtx);
+
 	spc->spc_nrun++;
 	TRACEPOINT(sched, enqueue, p->p_tid + THREAD_PID_OFFSET,
 	    p->p_p->ps_pid);
@@ -301,17 +305,19 @@ setrunqueue(struct cpu_info *ci, struct proc *p, uint8_t prio)
 		cpu_unidle(p->p_cpu);
 	else if (prio < spc->spc_curpriority)
 		need_resched(ci);
+
+	mtx_leave(&spc->spc_mtx);
 }
 
 void
 remrunqueue(struct proc *p)
 {
-	struct schedstate_percpu *spc;
+	struct schedstate_percpu *spc = &p->p_cpu->ci_schedstate;
 	int queue = p->p_runpri >> 2;
 
 	MUTEX_ASSERT_LOCKED(&p->p_mtx);
-	SCHED_ASSERT_LOCKED();
-	spc = &p->p_cpu->ci_schedstate;
+	MUTEX_ASSERT_LOCKED(&spc->spc_mtx);
+
 	spc->spc_nrun--;
 	TRACEPOINT(sched, dequeue, p->p_tid + THREAD_PID_OFFSET,
 	    p->p_p->ps_pid);
@@ -331,19 +337,20 @@ sched_chooseproc(void)
 	struct proc *p;
 	int queue, lock;
 
-	SCHED_ASSERT_LOCKED();
 #ifdef MULTIPROCESSOR
 restart:
 	if (spc->spc_schedflags & SPCF_SHOULDHALT) {
+		mtx_enter(&spc->spc_mtx);
 		if (spc->spc_whichqs) {
 			for (queue = 0; queue < SCHED_NQS; queue++) {
 				while ((p = TAILQ_FIRST(&spc->spc_qs[queue]))) {
 					lock = p != curproc;
 					if (lock && !mtx_enter_try(&p->p_mtx)) {
-						SCHED_RELOCK();
+						mtx_leave(&spc->spc_mtx);
 						goto restart;
 					}
 					remrunqueue(p);
+					mtx_leave(&spc->spc_mtx);
 					setrunqueue(NULL, p, p->p_runpri);
 					if (p->p_cpu == curcpu()) {
 						KASSERT(p->p_flag & P_CPUPEG);
@@ -353,16 +360,18 @@ restart:
 					}
 					if (lock)
 						mtx_leave(&p->p_mtx);
+					goto restart;
 				}
 			}
 		}
+		mtx_leave(&spc->spc_mtx);
 		p = spc->spc_idleproc;
 		if (p == NULL)
 			panic("no idleproc set on CPU%d",
 			    CPU_INFO_UNIT(curcpu()));
 		lock = p != curproc;
 		if (lock && !mtx_enter_try(&p->p_mtx)) {
-			SCHED_RELOCK();
+			mtx_leave(&spc->spc_mtx);
 			goto restart;
 		}
 		p->p_stat = SRUN;
@@ -371,29 +380,34 @@ restart:
 	}
 #endif
 again:
+	mtx_enter(&spc->spc_mtx);
 	if (spc->spc_whichqs) {
 		queue = ffs(spc->spc_whichqs) - 1;
 		p = TAILQ_FIRST(&spc->spc_qs[queue]);
 		lock = p != curproc;
 		if (lock && !mtx_enter_try(&p->p_mtx)) {
-			SCHED_RELOCK();
+			mtx_leave(&spc->spc_mtx);
 			goto again;
 		}
 		remrunqueue(p);
+		mtx_leave(&spc->spc_mtx);
 		sched_noidle++;
 		if (p->p_stat != SRUN)
 			panic("thread %d not in SRUN: %d", p->p_tid, p->p_stat);
-	} else if ((p = sched_steal_proc(curcpu())) == NULL) {
-		p = spc->spc_idleproc;
-		if (p == NULL)
-			panic("no idleproc set on CPU%d",
-			    CPU_INFO_UNIT(curcpu()));
-		lock = p != curproc;
-		if (lock && !mtx_enter_try(&p->p_mtx)) {
-			SCHED_RELOCK();
-			goto again;
+	} else {
+		mtx_leave(&spc->spc_mtx);
+		if ((p = sched_steal_proc(curcpu())) == NULL) {
+			p = spc->spc_idleproc;
+			if (p == NULL)
+				panic("no idleproc set on CPU%d",
+				    CPU_INFO_UNIT(curcpu()));
+			lock = p != curproc;
+			if (lock && !mtx_enter_try(&p->p_mtx)) {
+				mtx_leave(&spc->spc_mtx);
+				goto again;
+			}
+			p->p_stat = SRUN;
 		}
-		p->p_stat = SRUN;
 	}
 
 	KASSERT(p->p_wchan == NULL);
@@ -526,12 +540,11 @@ sched_steal_proc(struct cpu_info *self)
 	struct proc *best = NULL;
 #ifdef MULTIPROCESSOR
 	struct schedstate_percpu *spc;
-	int bestcost = INT_MAX;
+	int bestcost = INT_MAX, s;
 	struct cpu_info *ci;
 	struct cpuset set;
 
 	KASSERT((self->ci_schedstate.spc_schedflags & SPCF_SHOULDHALT) == 0);
-	SCHED_ASSERT_LOCKED();
 
 	/* Don't steal if we don't want to schedule processes in this CPU. */
 	if (!cpuset_isset(&sched_all_cpus, self))
@@ -540,6 +553,7 @@ sched_steal_proc(struct cpu_info *self)
 	cpuset_copy(&set, &sched_queued_cpus);
 	cpuset_del(&set, self);
 
+	s = splsched();
 	while ((ci = cpuset_first(&set)) != NULL) {
 		struct proc *p;
 		int queue;
@@ -549,6 +563,7 @@ sched_steal_proc(struct cpu_info *self)
 
 		spc = &ci->ci_schedstate;
 
+		mtx_enter(&spc->spc_mtx);
 		queue = ffs(spc->spc_whichqs) - 1;
 		TAILQ_FOREACH(p, &spc->spc_qs[queue], p_runq) {
 			if (p->p_flag & P_CPUPEG)
@@ -564,23 +579,43 @@ sched_steal_proc(struct cpu_info *self)
 				continue;
 			}
 
+			KASSERT(ci == p->p_cpu);
+
 			/* Release previous best, keep new best locked. */
 			if (best != NULL)
 				mtx_leave(&best->p_mtx);
+
 			best = p;
 			bestcost = cost;
 		}
+		mtx_leave(&spc->spc_mtx);
 	}
 	if (best == NULL)
-		return (NULL);
+		goto out;
 
 	TRACEPOINT(sched, steal, best->p_tid + THREAD_PID_OFFSET,
 	    best->p_p->ps_pid, CPU_INFO_UNIT(self));
 
+	spc = &best->p_cpu->ci_schedstate;
+	mtx_enter(&spc->spc_mtx);
 	remrunqueue(best);
+	mtx_leave(&spc->spc_mtx);
+
 	best->p_cpu = self;
+	MUTEX_ASSERT_LOCKED(&best->p_mtx);
+
+#ifdef DIAGNOSTIC
+	cpuset_copy(&set, &sched_queued_cpus);
+	while ((ci = cpuset_first(&set)) != NULL) {
+		cpuset_del(&set, ci);
+		spc = &ci->ci_schedstate;
+		MUTEX_ASSERT_UNLOCKED(&spc->spc_mtx);
+	}
+#endif
 
 	sched_stolen++;
+out:
+	splx(s);
 #endif
 	return (best);
 }
@@ -672,9 +707,7 @@ sched_peg_curproc(struct cpu_info *ci)
 	mtx_enter(&p->p_mtx);
 	atomic_setbits_int(&p->p_flag, P_CPUPEG);
 	p->p_ru.ru_nvcsw++;
-	SCHED_LOCK();
 	setrunqueue(ci, p, p->p_usrpri);
-	SCHED_UNLOCK();
 
 	mi_switch();
 	mtx_leave(&p->p_mtx);

@@ -229,6 +229,7 @@ schedcpu(void *unused)
 {
 	static struct timeout to = TIMEOUT_INITIALIZER(schedcpu, NULL);
 	fixpt_t loadfac = loadfactor(averunnable.ldavg[0]);
+	struct schedstate_percpu *spc;
 	struct proc *p;
 	unsigned int newcpu;
 
@@ -274,10 +275,11 @@ schedcpu(void *unused)
 
 		if (p->p_stat == SRUN &&
 		    (p->p_runpri / SCHED_PPQ) != (p->p_usrpri / SCHED_PPQ)) {
-			SCHED_LOCK();
+			spc = &p->p_cpu->ci_schedstate;
+			mtx_enter(&spc->spc_mtx);
 			remrunqueue(p);
+			mtx_leave(&spc->spc_mtx);
 			setrunqueue(p->p_cpu, p, p->p_usrpri);
-			SCHED_UNLOCK();
 		}
 		mtx_leave(&p->p_mtx);
 	}
@@ -320,9 +322,7 @@ yield(void)
 
 	mtx_enter(&p->p_mtx);
 	p->p_ru.ru_nvcsw++;
-	SCHED_LOCK();
 	setrunqueue(p->p_cpu, p, p->p_usrpri);
-	SCHED_UNLOCK();
 
 	mi_switch();
 	mtx_leave(&p->p_mtx);
@@ -341,9 +341,7 @@ preempt(void)
 
 	mtx_enter(&p->p_mtx);
 	p->p_ru.ru_nivcsw++;
-	SCHED_LOCK();
 	setrunqueue(p->p_cpu, p, p->p_usrpri);
-	SCHED_UNLOCK();
 
 	mi_switch();
 	mtx_leave(&p->p_mtx);
@@ -402,12 +400,10 @@ mi_switch(void)
 	 */
 	atomic_clearbits_int(&spc->spc_schedflags, SPCF_SWITCHCLEAR);
 
-	SCHED_LOCK();
+	/* Preserve raised IPL. */
+	s = splsched();
 	nextproc = sched_chooseproc();
 	MUTEX_ASSERT_LOCKED(&nextproc->p_mtx);
-	/* Preserve raised IPL. */
-	s = MUTEX_OLDIPL(&sched_lock);
-	SCHED_UNLOCK();
 
 	if (p != nextproc) {
 		atomic_inc_int(&uvmexp.swtch);
@@ -428,6 +424,7 @@ mi_switch(void)
 	}
 
 	clear_resched(curcpu());
+	splx(s);
 
 	SCHED_ASSERT_UNLOCKED();
 
@@ -503,9 +500,7 @@ setrunnable(struct proc *p)
 				p->p_stat = SONPROC;
 			return;
 		}
-		SCHED_LOCK();
 		setrunqueue(NULL, p, prio);
-		SCHED_UNLOCK();
 		break;
 	case SSLEEP:
 		prio = p->p_slppri;
@@ -515,9 +510,7 @@ setrunnable(struct proc *p)
 		/* if not yet asleep, don't add to runqueue */
 		if (ISSET(p->p_flag, P_INSCHED))
 			return;
-		SCHED_LOCK();
 		setrunqueue(NULL, p, prio);
-		SCHED_UNLOCK();
 		break;
 	}
 	if (p->p_slptime > 1) {
