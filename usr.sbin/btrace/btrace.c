@@ -70,7 +70,8 @@ struct dtioc_probe_info	*dtpi_get_by_value(const char *, const char *,
  */
 void			 probe_bail(struct bt_probe *);
 const char		*probe_name(struct bt_probe *);
-void			 rules_do(int);
+struct dt_evt 		*buf_setup(int, unsigned int, size_t *);
+void			 rules_do(int, unsigned long);
 int			 rules_setup(int);
 int			 rules_apply(int, struct dt_evt *);
 void			 rules_teardown(int);
@@ -139,13 +140,14 @@ int
 main(int argc, char *argv[])
 {
 	int fd = -1, ch, error = 0;
-	const char *filename = NULL, *btscript = NULL;
+	const char *filename = NULL, *btscript = NULL, *e;
 	int showprobes = 0, noaction = 0;
+	unsigned long nelems = DT_MIN_EVTRING_SIZE;
 	size_t btslen = 0;
 
 	setlocale(LC_ALL, "");
 
-	while ((ch = getopt(argc, argv, "e:lnp:v")) != -1) {
+	while ((ch = getopt(argc, argv, "e:lM:np:v")) != -1) {
 		switch (ch) {
 		case 'e':
 			btscript = optarg;
@@ -153,6 +155,12 @@ main(int argc, char *argv[])
 			break;
 		case 'l':
 			showprobes = 1;
+			break;
+		case 'M':
+			nelems = strtonum(optarg, DT_MIN_EVTRING_SIZE,
+					  DT_MAX_EVTRING_SIZE, &e);
+			if (e != NULL)
+				errx(1, "Parameter -M is %s: %s", e, optarg);
 			break;
 		case 'n':
 			noaction = 1;
@@ -220,7 +228,7 @@ main(int argc, char *argv[])
 	}
 
 	if (!TAILQ_EMPTY(&g_rules))
-		rules_do(fd);
+		rules_do(fd, nelems);
 
 	if (fd != -1)
 		close(fd);
@@ -451,10 +459,33 @@ probe_name(struct bt_probe *bp)
 	return buf;
 }
 
+struct dt_evt *
+buf_setup(int fd, unsigned int nelems, size_t *s)
+{
+	struct dt_evt *buf;
+	long nproc;
+
+	if (g_nprobes > 0) {
+		if (ioctl(fd, DTIOCSETBUFSZ, &nelems))
+			err(1, "DTIOCSETBUFSZ");
+	}
+
+	nproc = sysconf(_SC_NPROCESSORS_ONLN);
+	buf = calloc(nelems * (nproc + 1), sizeof(*buf));
+	if (buf == NULL)
+		return NULL;
+
+	debug("Using #%lu/CPU buffer\n", nelems);
+	*s = nelems * (nproc + 1) * sizeof(*buf);
+	return buf;
+}
+
 void
-rules_do(int fd)
+rules_do(int fd, unsigned long nelems)
 {
 	struct sigaction sa;
+	struct dt_evt *buf = NULL;
+	size_t buf_sz = 0;
 	int halt = 0;
 
 	memset(&sa, 0, sizeof(sa));
@@ -466,14 +497,17 @@ rules_do(int fd)
 	if (sigaction(SIGTERM, &sa, NULL))
 		err(1, "sigaction");
 
+	buf = buf_setup(fd, nelems, &buf_sz);
+	if (buf == NULL)
+		errx(1, "devbuf");
+
 	halt = rules_setup(fd);
 
 	while (!quit_pending && !halt && g_nprobes > 0) {
-		static struct dt_evt devtbuf[64];
 		ssize_t rlen;
 		size_t i;
 
-		rlen = read(fd, devtbuf, sizeof(devtbuf));
+		rlen = read(fd, buf, buf_sz);
 		if (rlen == -1) {
 			if (errno == EINTR && quit_pending) {
 				printf("\n");
@@ -486,13 +520,14 @@ rules_do(int fd)
 			err(1, "incorrect read");
 
 		for (i = 0; i < rlen / sizeof(struct dt_evt); i++) {
-			halt = rules_apply(fd, &devtbuf[i]);
+			halt = rules_apply(fd, &buf[i]);
 			if (halt)
 				break;
 		}
 	}
 
 	rules_teardown(fd);
+	free(buf);
 
 	if (verbose && fd != -1) {
 		struct dtioc_stat dtst;

@@ -23,6 +23,7 @@
 .Sh SYNOPSIS
 .Nm btrace
 .Op Fl lnv
+.Op Fl M Ar elements
 .Op Fl p Ar elffile
 .Ar programfile | Fl e Ar program
 .Op Ar argument ...
@@ -53,6 +54,8 @@ are passed through to the
 .Ar program .
 .It Fl l
 List all available probes.
+.It Fl M
+Set maximum number of probe events per CPU to cache in the kernel buffer.
 .It Fl n
 No action.
 Parse the program and then exit.
