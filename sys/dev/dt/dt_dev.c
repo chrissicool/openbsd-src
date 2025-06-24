@@ -81,8 +81,6 @@
 #define DT_FA_PROFILE	0
 #endif
 
-#define DT_EVTRING_SIZE	16	/* # of slots in per PCB event ring */
-
 #define DPRINTF(x...) /* nothing */
 
 /*
@@ -99,6 +97,7 @@ struct dt_cpubuf {
 	unsigned int		 dc_cons;	/* [c] write index */
 	struct dt_evt		*dc_ring;	/* [s] ring of event states */
 	unsigned int	 	 dc_inevt;	/* [c] in event already? */
+	unsigned int		 dc_nelems;	/* [K] #elemens in ringbuffer */
 
 	/* Counters */
 	unsigned int		 dc_dropevt;	/* [p] # of events dropped */
@@ -153,6 +152,7 @@ int	dtioctl(dev_t, u_long, caddr_t, int, struct proc *);
 
 struct	dt_softc *dtlookup(int);
 struct	dt_softc *dtalloc(void);
+int	dtalloc_ring(struct dt_softc *, unsigned int);
 void	dtfree(struct dt_softc *);
 
 int	dt_ioctl_list_probes(struct dt_softc *, struct dtioc_probe *);
@@ -284,7 +284,7 @@ dtioctl(dev_t dev, u_long cmd, caddr_t addr, int flag, struct proc *p)
 {
 	struct dt_softc *sc;
 	int unit = minor(dev);
-	int on, error = 0;
+	int on, nelems, error = 0;
 
 	sc = dtlookup(unit);
 	KASSERT(sc != NULL);
@@ -300,6 +300,7 @@ dtioctl(dev_t dev, u_long cmd, caddr_t addr, int flag, struct proc *p)
 	case DTIOCPRBENABLE:
 	case DTIOCPRBDISABLE:
 	case DTIOCGETAUXBASE:
+	case DTIOCSETBUFSZ:
 		/* root only ioctl(2) */
 		break;
 	default:
@@ -326,6 +327,10 @@ dtioctl(dev_t dev, u_long cmd, caddr_t addr, int flag, struct proc *p)
 	case DTIOCGETAUXBASE:
 		error = dt_ioctl_get_auxbase(sc, (struct dtioc_getaux *)addr);
 		break;
+	case DTIOCSETBUFSZ:
+		nelems = *(unsigned int *)addr;
+		error = dtalloc_ring(sc, nelems);
+		break;
 	default:
 		KASSERT(0);
 	}
@@ -348,51 +353,85 @@ dtlookup(int unit)
 	return sc;
 }
 
+int
+dtalloc_ring(struct dt_softc *sc, unsigned int nelems)
+{
+	struct dt_evt *dtev;
+	struct dt_cpubuf *dc;
+	int i;
+
+	if (nelems < DT_MIN_EVTRING_SIZE ||
+	    nelems > DT_MAX_EVTRING_SIZE)
+		return EINVAL;
+
+	for (i = 0; i < ncpusfound; i++) {
+		dc = &sc->ds_cpu[i];
+		if (dc->dc_ring) {
+			free(dc->dc_ring, M_DEVBUF,
+			    dc->dc_nelems * sizeof(*dtev));
+			dc->dc_ring = NULL;
+			dc->dc_nelems = 0;
+		}
+		dtev = mallocarray(nelems, sizeof(*dtev), M_DEVBUF,
+		    M_WAITOK|M_CANFAIL|M_ZERO);
+		if (dtev == NULL)
+			break;
+		dc->dc_ring = dtev;
+		dc->dc_nelems = nelems;
+	}
+	if (i < ncpusfound) {
+		for (; i > 0; i--) {
+			dc = &sc->ds_cpu[i];
+			free(dc->dc_ring, M_DEVBUF,
+			    dc->dc_nelems * sizeof(*dtev));
+			dc->dc_ring = NULL;
+			dc->dc_nelems = 0;
+		}
+		return ENOMEM;
+	}
+
+	return 0;
+}
+
+
 struct dt_softc *
 dtalloc(void)
 {
 	struct dt_softc *sc;
-	struct dt_evt *dtev;
-	int i;
+	int r;
 
 	sc = malloc(sizeof(*sc), M_DEVBUF, M_WAITOK|M_CANFAIL|M_ZERO);
 	if (sc == NULL)
 		return NULL;
 
-	for (i = 0; i < ncpusfound; i++) {
-		dtev = mallocarray(DT_EVTRING_SIZE, sizeof(*dtev), M_DEVBUF,
-		    M_WAITOK|M_CANFAIL|M_ZERO);
-		if (dtev == NULL)
-			break;
-		sc->ds_cpu[i].dc_ring = dtev;
-	}
-	if (i < ncpusfound) {
-		dtfree(sc);
-		return NULL;
-	}
+	r = dtalloc_ring(sc, DT_MIN_EVTRING_SIZE);
+	if (r != 0)
+		goto oom;
 
 	sc->ds_si = softintr_establish(IPL_SOFTCLOCK | IPL_MPSAFE,
 	    dt_deferred_wakeup, sc);
-	if (sc->ds_si == NULL) {
-		dtfree(sc);
-		return NULL;
-	}
+	if (sc->ds_si == NULL)
+		goto oom;
 
 	return sc;
+oom:
+	dtfree(sc);
+	return NULL;
 }
 
 void
 dtfree(struct dt_softc *sc)
 {
-	struct dt_evt *dtev;
+	struct dt_cpubuf *dc;
 	int i;
 
 	if (sc->ds_si != NULL)
 		softintr_disestablish(sc->ds_si);
 
 	for (i = 0; i < ncpusfound; i++) {
-		dtev = sc->ds_cpu[i].dc_ring;
-		free(dtev, M_DEVBUF, DT_EVTRING_SIZE * sizeof(*dtev));
+		dc = &sc->ds_cpu[i];
+		free(dc->dc_ring, M_DEVBUF,
+		    dc->dc_nelems * sizeof(*dc->dc_ring));
 	}
 	free(sc, M_DEVBUF, sizeof(*sc));
 }
@@ -524,6 +563,9 @@ dt_ioctl_record_start(struct dt_softc *sc)
 		return EBUSY;
 
 	KERNEL_ASSERT_LOCKED();
+
+	if (sc->ds_cpu[0].dc_ring == NULL)
+		return EINVAL;
 	if (TAILQ_EMPTY(&sc->ds_pcbs))
 		return ENOENT;
 
@@ -772,7 +814,7 @@ dt_pcb_ring_get(struct dt_pcb *dp, int profiling)
 	prod = dc->dc_prod;
 	cons = dc->dc_cons;
 	distance = prod - cons;
-	if (distance == 1 || distance == (1 - DT_EVTRING_SIZE)) {
+	if (distance == 1 || distance == (1 - dc->dc_nelems)) {
 		/* read(2) isn't finished */
 		dc->dc_dropevt++;
 		membar_producer();
@@ -815,7 +857,7 @@ dt_pcb_ring_consume(struct dt_pcb *dp, struct dt_evt *dtev)
 
 	KASSERT(dtev == &dc->dc_ring[dc->dc_cons]);
 
-	dc->dc_cons = (dc->dc_cons + 1) % DT_EVTRING_SIZE;
+	dc->dc_cons = (dc->dc_cons + 1) % dc->dc_nelems;
 	membar_producer();
 
 	atomic_inc_int(&dp->dp_sc->ds_evtcnt);
@@ -842,7 +884,7 @@ dt_ring_copy(struct dt_cpubuf *dc, struct uio *uio, size_t max, size_t *rcvd)
 	prod = dc->dc_prod;
 
 	if (cons < prod)
-		count = DT_EVTRING_SIZE - prod;
+		count = dc->dc_nelems - prod;
 	else
 		count = cons - prod;
 
@@ -856,7 +898,7 @@ dt_ring_copy(struct dt_cpubuf *dc, struct uio *uio, size_t max, size_t *rcvd)
 	copied += count;
 
 	/* Produce */
-	prod = (prod + count) % DT_EVTRING_SIZE;
+	prod = (prod + count) % dc->dc_nelems;
 
 	/* If the ring didn't wrap, stop here. */
 	if (max == copied || prod != 0 || cons == 0)

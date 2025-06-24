@@ -133,6 +133,10 @@ struct dtioc_getaux {
 #define DTIOCPRBDISABLE	 _IOW('D', 5, struct dtioc_req)
 #define DTIOCGARGS	_IOWR('D', 6, struct dtioc_arg)
 #define DTIOCGETAUXBASE	 _IOWR('D', 7, struct dtioc_getaux)
+#define DTIOCSETBUFSZ	_IOW('D', 8, unsigned int)
+
+#define DT_MIN_EVTRING_SIZE	16
+#define DT_MAX_EVTRING_SIZE	1024
 
 #ifdef _KERNEL
 
