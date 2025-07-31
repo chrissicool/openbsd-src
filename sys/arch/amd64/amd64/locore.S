@@ -400,13 +400,14 @@ restore_saved:
 	cmpq	%rcx,CPUVAR(PROC_PMAP)
 	jnz	.Lbogus_proc_pmap
 #endif
-	/* record which pmap this CPU should get IPIs for */
-	movq	%rbx,CPUVAR(PROC_PMAP)
 
 .Lset_cr3:
 	movq	%rax,%cr3			/* %rax used below too */
 
 .Lsame_cr3:
+	/* record which pmap this CPU should get IPIs for */
+	movq	%rbx,CPUVAR(PROC_PMAP)
+
 	/*
 	 * If we switched from a userland thread with a shallow call stack
 	 * (e.g interrupt->ast->mi_ast->prempt->mi_switch->cpu_switchto)
