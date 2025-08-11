@@ -590,7 +590,6 @@ int	wakeup_proc(struct proc *);
 void	unsleep(struct proc *);
 void	reaper(void *);
 __dead void exit1(struct proc *, int, int, int);
-void	exit2(struct proc *);
 void	cpu_fork(struct proc *_curp, struct proc *_child, void *_stack,
 	    void *_tcb, void (*_func)(void *), void *_arg);
 void	cpu_exit(struct proc *);

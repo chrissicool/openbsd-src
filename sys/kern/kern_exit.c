@@ -69,6 +69,7 @@
 #include <sys/kcov.h>
 #endif
 
+void	exit2(struct proc *);
 void	proc_finish_wait(struct proc *, struct process *);
 void	process_clear_orphan(struct process *);
 void	process_remove(struct process *);
@@ -364,6 +365,8 @@ exit1(struct proc *p, int xexit, int xsig, int flags)
 	p->p_pctcpu = 0;
 
 	if ((p->p_flag & P_THREAD) == 0) {
+		struct process *pptr = pr->ps_pptr;
+
 		/*
 		 * Final thread has died, so add on our children's rusage
 		 * and calculate the total times.
@@ -374,6 +377,10 @@ exit1(struct proc *p, int xexit, int xsig, int flags)
 		rup->ru_isrss = pr->ps_tu.tu_isrss;
 		ruadd(rup, &pr->ps_cru);
 
+		/* Notify listeners of our demise and clean up. */
+		/* NOTE: Must be locked together with the notification below. */
+		knote_processexit(pr);
+
 		/*
 		 * Notify parent that we're gone.  If we're not going to
 		 * become a zombie, reparent to process 1 (init) so that
@@ -382,12 +389,16 @@ exit1(struct proc *p, int xexit, int xsig, int flags)
 		 */
 		mtx_enter(&pr->ps_mtx);
 		if (pr->ps_flags & PS_NOZOMBIE) {
-			struct process *ppr = pr->ps_pptr;
 			process_reparent(pr, initprocess);
-			atomic_setbits_int(&ppr->ps_flags, PS_WAITEVENT);
-			wakeup(ppr);
+			exit2(p);
+		} else {
+			/* Process is now a true zombie. */
+			atomic_setbits_int(&pr->ps_flags, PS_ZOMBIE);
+			prsignal(pptr, SIGCHLD);
 		}
 		mtx_leave(&pr->ps_mtx);
+		atomic_setbits_int(&pptr->ps_flags, PS_WAITEVENT);
+		wakeup(pptr);
 	}
 
 	/* just a thread? check if last one standing. */
@@ -398,6 +409,7 @@ exit1(struct proc *p, int xexit, int xsig, int flags)
 		if (pr->ps_threadcnt + pr->ps_exitcnt == 1)
 			wakeup(&pr->ps_threads);
 		mtx_leave(&pr->ps_mtx);
+		exit2(p);
 	}
 
 	/*
@@ -502,29 +514,11 @@ reaper(void *arg)
 			struct process *pr = p->p_p;
 
 			KERNEL_LOCK();
-			if ((pr->ps_flags & PS_NOZOMBIE) == 0) {
-				/* Process is now a true zombie. */
-				atomic_setbits_int(&pr->ps_flags, PS_ZOMBIE);
-			}
+			/* No one will wait for us, just zap it. */
+			process_remove(pr);
+			KERNEL_UNLOCK();
 
-			/* Notify listeners of our demise and clean up. */
-			knote_processexit(pr);
-
-			if (pr->ps_flags & PS_ZOMBIE) {
-				struct process *pptr = pr->ps_pptr;
-				KERNEL_UNLOCK();
-
-				/* Post SIGCHLD and wake up parent. */
-				prsignal(pptr, SIGCHLD);
-				atomic_setbits_int(&pptr->ps_flags,
-				    PS_WAITEVENT);
-				wakeup(pptr);
-			} else {
-				/* No one will wait for us, just zap it. */
-				process_remove(pr);
-				KERNEL_UNLOCK();
-				process_zap(pr);
-			}
+			process_zap(pr);
 		}
 	}
 }
@@ -791,6 +785,9 @@ proc_finish_wait(struct proc *waiter, struct process *pr)
 		wakeup(tr);
 	} else {
 		mtx_leave(&pr->ps_mtx);
+		/* Wait until the proc is off of its CPU. */
+		cond_wait(pr->ps_mainproc->p_deadcond, "pdead");
+
 		scheduler_wait_hook(waiter, pr->ps_mainproc);
 		rup = &waiter->p_p->ps_cru;
 		ruadd(rup, pr->ps_ru);

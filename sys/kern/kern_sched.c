@@ -204,14 +204,12 @@ sched_idle(void *v)
  * To free our address space we have to jump through a few hoops.
  * The freeing is done by the reaper.  We make sure that this proc
  * gets freed only after switching to another proc with the spc_deadcond
- * signal. The reaper waits for it.
+ * signal. The reaping process waits for it.
  */
 void
 sched_exit(struct proc *p)
 {
 	struct schedstate_percpu *spc = &curcpu()->ci_schedstate;
-
-	exit2(p);
 
 	KASSERT(spc->spc_deadcond == NULL);
 	spc->spc_deadcond = p->p_deadcond;
