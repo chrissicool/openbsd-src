@@ -295,7 +295,7 @@ uvm_uarea_alloc(void)
  * uvm_uarea_free: free a dead thread's stack
  *
  * - the thread passed to us is a dead thread; we
- *   are running on a different context now (the reaper).
+ *   are running on a different context now.
  */
 void
 uvm_uarea_free(struct proc *p)

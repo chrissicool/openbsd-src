@@ -463,6 +463,11 @@ exit2(struct proc *p)
 void
 proc_free(struct proc *p)
 {
+	WITNESS_THREAD_EXIT(p);
+
+	uvm_uarea_free(p);
+	p->p_vmspace = NULL;		/* zap the thread's copy */
+
 	crfree(p->p_ucred);
 	pool_put(&proc_pool, p);
 	atomic_dec_int(&nthreads);
@@ -492,16 +497,11 @@ reaper(void *arg)
 		TAILQ_REMOVE(&deadproc, p, p_runq);
 		mtx_leave(&deadproc_mutex);
 
-		WITNESS_THREAD_EXIT(p);
-
 		/*
 		 * Free the VM resources we're still holding on to.
 		 * We must do this from a valid thread because doing
 		 * so may block.
 		 */
-		uvm_uarea_free(p);
-		p->p_vmspace = NULL;		/* zap the thread's copy */
-
 		if (p->p_flag & P_THREAD) {
 			/* Just a thread */
 			proc_free(p);
