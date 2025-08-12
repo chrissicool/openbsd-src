@@ -71,6 +71,7 @@
 
 void	proc_finish_wait(struct proc *, struct process *);
 void	process_clear_orphan(struct process *);
+void	process_remove(struct process *);
 void	process_zap(struct process *);
 void	proc_free(struct proc *);
 void	unveil_destroy(struct process *ps);
@@ -520,16 +521,20 @@ reaper(void *arg)
 			knote_processexit(pr);
 
 			if (pr->ps_flags & PS_ZOMBIE) {
+				struct process *pptr = pr->ps_pptr;
+				KERNEL_UNLOCK();
+
 				/* Post SIGCHLD and wake up parent. */
-				prsignal(pr->ps_pptr, SIGCHLD);
-				atomic_setbits_int(&pr->ps_pptr->ps_flags,
+				prsignal(pptr, SIGCHLD);
+				atomic_setbits_int(&pptr->ps_flags,
 				    PS_WAITEVENT);
-				wakeup(pr->ps_pptr);
+				wakeup(pptr);
 			} else {
 				/* No one will wait for us, just zap it. */
+				process_remove(pr);
+				KERNEL_UNLOCK();
 				process_zap(pr);
 			}
-			KERNEL_UNLOCK();
 		}
 	}
 }
@@ -801,7 +806,12 @@ proc_finish_wait(struct proc *waiter, struct process *pr)
 		ruadd(rup, pr->ps_ru);
 		LIST_REMOVE(pr, ps_list);	/* off zombprocess */
 		freepid(pr->ps_pid);
+		process_remove(pr);
+		KERNEL_UNLOCK();
+
 		process_zap(pr);
+
+		KERNEL_LOCK();
 	}
 }
 
@@ -866,17 +876,21 @@ process_reparent(struct process *child, struct process *parent)
 }
 
 void
-process_zap(struct process *pr)
+process_remove(struct process *pr)
 {
-	struct proc *p = pr->ps_mainproc;
-
 	/*
 	 * Finally finished with old proc entry.
-	 * Unlink it from its process group and free it.
+	 * Unlink it from its process group.
 	 */
 	leavepgrp(pr);
 	LIST_REMOVE(pr, ps_sibling);
 	process_clear_orphan(pr);
+}
+
+void
+process_zap(struct process *pr)
+{
+	struct proc *p = pr->ps_mainproc;
 
 	/*
 	 * Decrement the count of procs running with this uid.
