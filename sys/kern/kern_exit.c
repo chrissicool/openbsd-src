@@ -118,6 +118,7 @@ exit1(struct proc *p, int xexit, int xsig, int flags)
 {
 	struct process *pr, *qr, *nqr;
 	struct rusage *rup;
+	struct vnode *otvp;
 
 	atomic_setbits_int(&p->p_flag, P_WEXIT);
 
@@ -259,6 +260,14 @@ exit1(struct proc *p, int xexit, int xsig, int flags)
 			uvm_purge();
 			KERNEL_LOCK();
 		}
+
+		/*
+		 * Release reference to text vnode
+		 */
+		otvp = pr->ps_textvp;
+		pr->ps_textvp = NULL;
+		if (otvp)
+			vrele(otvp);
 	}
 
 	p->p_fd = NULL;		/* zap the thread's copy */
@@ -859,7 +868,6 @@ process_reparent(struct process *child, struct process *parent)
 void
 process_zap(struct process *pr)
 {
-	struct vnode *otvp;
 	struct proc *p = pr->ps_mainproc;
 
 	/*
@@ -874,14 +882,6 @@ process_zap(struct process *pr)
 	 * Decrement the count of procs running with this uid.
 	 */
 	(void)chgproccnt(pr->ps_ucred->cr_ruid, -1);
-
-	/*
-	 * Release reference to text vnode
-	 */
-	otvp = pr->ps_textvp;
-	pr->ps_textvp = NULL;
-	if (otvp)
-		vrele(otvp);
 
 	KASSERT(pr->ps_threadcnt == 0);
 	KASSERT(pr->ps_exitcnt == 1);
