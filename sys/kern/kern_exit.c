@@ -508,9 +508,6 @@ reaper(void *arg)
 		} else {
 			struct process *pr = p->p_p;
 
-			/* Release the rest of the process's vmspace */
-			uvm_exit(pr);
-
 			KERNEL_LOCK();
 			if ((pr->ps_flags & PS_NOZOMBIE) == 0) {
 				/* Process is now a true zombie. */
@@ -891,6 +888,9 @@ void
 process_zap(struct process *pr)
 {
 	struct proc *p = pr->ps_mainproc;
+
+	/* Release the rest of the process's vmspace */
+	uvm_exit(pr);
 
 	/*
 	 * Decrement the count of procs running with this uid.
