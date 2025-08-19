@@ -290,11 +290,6 @@ exit1(struct proc *p, int xexit, int xsig, int flags)
 	 * thread of a process that isn't PS_NOZOMBIE, we'll put
 	 * the process on the zombprocess list below.
 	 */
-	/*
-	 * NOTE: WE ARE NO LONGER ALLOWED TO SLEEP!
-	 */
-	p->p_stat = SDEAD;
-
 	LIST_REMOVE(p, p_hash);
 	LIST_REMOVE(p, p_list);
 
@@ -408,6 +403,12 @@ exit1(struct proc *p, int xexit, int xsig, int flags)
 	/*
 	 * Other substructures are freed from reaper and wait().
 	 */
+
+	/*
+	 * NOTE: WE ARE NO LONGER ALLOWED TO SLEEP!
+	 */
+	p->p_stat = SDEAD;
+
 
 	/*
 	 * Finally, call machine-dependent code.
