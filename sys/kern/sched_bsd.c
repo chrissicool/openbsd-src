@@ -423,6 +423,12 @@ mi_switch(void)
 	KASSERT(p->p_cpu == curcpu());
 	spc = &p->p_cpu->ci_schedstate;
 
+	/* Signal that the previous proc is off the CPU now. */
+	if (spc->spc_deadcond) {
+		cond_signal(spc->spc_deadcond);
+		spc->spc_deadcond = NULL;
+	}
+
 	/* Start any optional clock interrupts needed by the thread. */
 	if (ISSET(p->p_p->ps_flags, PS_ITIMER)) {
 		atomic_setbits_int(&spc->spc_schedflags, SPCF_ITIMER);

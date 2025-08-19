@@ -418,10 +418,6 @@ exit1(struct proc *p, int xexit, int xsig, int flags)
 	 * Deactivate the exiting address space before the vmspace
 	 * is freed.  Note that we will continue to run on this
 	 * vmspace's context until the switch to idle in sched_exit().
-	 *
-	 * Once we are no longer using the dead process's vmspace and
-	 * stack, exit2() will be called to schedule those resources
-	 * to be released by the reaper thread.
 	 */
 	pmap_deactivate(p);
 	sched_exit(p);
@@ -439,20 +435,12 @@ struct mutex deadproc_mutex =
 struct prochead deadproc = TAILQ_HEAD_INITIALIZER(deadproc);
 
 /*
- * We are called from sched_idle() once it is safe to schedule the
- * dead process's resources to be freed. So this is not allowed to sleep.
- *
  * We lock the deadproc list, place the proc on that list (using
  * the p_runq member), and wake up the reaper.
  */
 void
 exit2(struct proc *p)
 {
-	/* account the remainder of time spent in exit1() */
-	mtx_enter(&p->p_p->ps_mtx);
-	tuagg_add_process(p->p_p, p);
-	mtx_leave(&p->p_p->ps_mtx);
-
 	mtx_enter(&deadproc_mutex);
 	TAILQ_INSERT_TAIL(&deadproc, p, p_runq);
 	mtx_leave(&deadproc_mutex);
@@ -468,6 +456,7 @@ proc_free(struct proc *p)
 	uvm_uarea_free(p);
 	p->p_vmspace = NULL;		/* zap the thread's copy */
 
+	free(p->p_deadcond, M_SUBPROC, sizeof(*p->p_deadcond));
 	crfree(p->p_ucred);
 	pool_put(&proc_pool, p);
 	atomic_dec_int(&nthreads);
@@ -496,6 +485,9 @@ reaper(void *arg)
 		/* Remove us from the deadproc list. */
 		TAILQ_REMOVE(&deadproc, p, p_runq);
 		mtx_leave(&deadproc_mutex);
+
+		/* Wait for the thread to be scheduled off the CPU. */
+		cond_wait(p->p_deadcond, "pdead");
 
 		/*
 		 * Free the VM resources we're still holding on to.

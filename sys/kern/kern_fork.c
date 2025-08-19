@@ -165,6 +165,8 @@ thread_new(struct proc *parent, vaddr_t uaddr)
 	    (caddr_t)&p->p_endcopy - (caddr_t)&p->p_startcopy);
 	crhold(p->p_ucred);
 	p->p_addr = (struct user *)uaddr;
+	p->p_deadcond = malloc(sizeof(*p->p_deadcond), M_SUBPROC, M_WAITOK);
+	cond_init(p->p_deadcond);
 
 	/*
 	 * Initialize the timeouts.
@@ -727,6 +729,12 @@ proc_trampoline_mi(void)
 	KERNEL_ASSERT_UNLOCKED();
 	assertwaitok();
 	smr_idle();
+
+	/* Signal that the previous proc is off the CPU now. */
+	if (spc->spc_deadcond) {
+		cond_signal(spc->spc_deadcond);
+		spc->spc_deadcond = NULL;
+	}
 
 	/* Start any optional clock interrupts needed by the thread. */
 	if (ISSET(p->p_p->ps_flags, PS_ITIMER)) {

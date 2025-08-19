@@ -107,7 +107,6 @@ sched_init_cpu(struct cpu_info *ci)
 
 	kthread_create_deferred(sched_kthreads_create, ci);
 
-	TAILQ_INIT(&spc->spc_deadproc);
 	SIMPLEQ_INIT(&spc->spc_deferred);
 
 	/*
@@ -170,16 +169,9 @@ sched_idle(void *v)
 
 	while (1) {
 		while (spc->spc_whichqs != 0) {
-			struct proc *dead;
-
 			SCHED_LOCK();
 			p->p_stat = SSLEEP;
 			mi_switch();
-
-			while ((dead = TAILQ_FIRST(&spc->spc_deadproc))) {
-				TAILQ_REMOVE(&spc->spc_deadproc, dead, p_runq);
-				exit2(dead);
-			}
 		}
 
 		splassert(IPL_NONE);
@@ -209,19 +201,19 @@ sched_idle(void *v)
 
 /*
  * To free our address space we have to jump through a few hoops.
- * The freeing is done by the reaper, but until we have one reaper
- * per cpu, we have no way of putting this proc on the deadproc list
- * and waking up the reaper without risking having our address space and
- * stack torn from under us before we manage to switch to another proc.
- * Therefore we have a per-cpu list of dead processes where we put this
- * proc and have idle clean up that list and move it to the reaper list.
+ * The freeing is done by the reaper.  We make sure that this proc
+ * gets freed only after switching to another proc with the spc_deadcond
+ * signal. The reaper waits for it.
  */
 void
 sched_exit(struct proc *p)
 {
 	struct schedstate_percpu *spc = &curcpu()->ci_schedstate;
 
-	TAILQ_INSERT_TAIL(&spc->spc_deadproc, p, p_runq);
+	exit2(p);
+
+	KASSERT(spc->spc_deadcond == NULL);
+	spc->spc_deadcond = p->p_deadcond;
 
 	tuagg_add_runtime();
 

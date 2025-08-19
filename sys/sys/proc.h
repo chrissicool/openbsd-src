@@ -337,6 +337,7 @@ struct process {
     (PS_SUGID | PS_SUGIDEXEC | PS_PLEDGE | PS_EXECPLEDGE | \
      PS_NOBTCFI | PS_WXNEEDED | PS_CHROOT | PS_PROFILE)
 
+struct cond;
 struct kcov_dev;
 struct lock_list_entry;
 struct kqueue;
@@ -362,6 +363,7 @@ struct proc {
 
 	struct	process *p_p;		/* [I] The process of this thread. */
 	TAILQ_ENTRY(proc) p_thr_link;	/* [K|m] Threads in a process linkage. */
+	struct cond	*p_deadcond;	/* Sync wrt. reaping us. */
 
 	/* substructures: */
 	struct	filedesc *p_fd;		/* copy of p_p->ps_fd */
