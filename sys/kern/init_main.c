@@ -117,7 +117,6 @@ struct	plimit limit0;
 struct	vmspace vmspace0;
 struct	sigacts sigacts0;
 struct	process *initprocess;
-struct	proc *reaperproc;
 
 extern	struct user *proc0paddr;
 
@@ -496,10 +495,6 @@ main(void *framep)
 	/* Create the pageout daemon kernel thread. */
 	if (kthread_create(uvm_pageout, NULL, NULL, "pagedaemon"))
 		panic("fork pagedaemon");
-
-	/* Create the reaper daemon kernel thread. */
-	if (kthread_create(reaper, NULL, &reaperproc, "reaper"))
-		panic("fork reaper");
 
 	/* Create the cleaner daemon kernel thread. */
 	if (kthread_create(buf_daemon, NULL, &cleanerproc, "cleaner"))

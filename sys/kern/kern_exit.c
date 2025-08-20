@@ -72,6 +72,7 @@
 void	exit2(struct proc *);
 void	proc_finish_wait(struct proc *, struct process *);
 void	process_clear_orphan(struct process *);
+void	proc_reap(struct proc *);
 void	process_remove(struct process *);
 void	process_zap(struct process *);
 void	proc_free(struct proc *);
@@ -287,7 +288,7 @@ exit1(struct proc *p, int xexit, int xsig, int flags)
 	 * Remove proc from pidhash chain and allproc so looking
 	 * it up won't work.  We will put the proc on the
 	 * deadproc list later (using the p_runq member), and
-	 * wake up the reaper when we do.  If this is the last
+	 * wake up the reaping process when we do.  If this is the last
 	 * thread of a process that isn't PS_NOZOMBIE, we'll put
 	 * the process on the zombprocess list below.
 	 */
@@ -413,7 +414,7 @@ exit1(struct proc *p, int xexit, int xsig, int flags)
 	}
 
 	/*
-	 * Other substructures are freed from reaper and wait().
+	 * Other substructures are freed from wait().
 	 */
 
 	/*
@@ -449,7 +450,7 @@ struct prochead deadproc = TAILQ_HEAD_INITIALIZER(deadproc);
 
 /*
  * We lock the deadproc list, place the proc on that list (using
- * the p_runq member), and wake up the reaper.
+ * the p_runq member), and wake up init as the reaping process.
  */
 void
 exit2(struct proc *p)
@@ -458,7 +459,8 @@ exit2(struct proc *p)
 	TAILQ_INSERT_TAIL(&deadproc, p, p_runq);
 	mtx_leave(&deadproc_mutex);
 
-	wakeup(&deadproc);
+	atomic_setbits_int(&initprocess->ps_flags, PS_WAITEVENT);
+	wakeup(initprocess);
 }
 
 void
@@ -476,50 +478,31 @@ proc_free(struct proc *p)
 }
 
 /*
- * Process reaper.  This is run by a kernel thread to free the resources
- * of a dead process.  Once the resources are free, the process becomes
- * a zombie, and the parent is allowed to read the undead's status.
+ * Free proc's ressources.
  */
 void
-reaper(void *arg)
+proc_reap(struct proc *p)
 {
-	struct proc *p;
+	/* Wait for the thread to be scheduled off the CPU. */
+	cond_wait(p->p_deadcond, "pdead");
 
-	KERNEL_UNLOCK();
+	/*
+	 * Free the VM resources we're still holding on to.
+	 * We must do this from a valid thread because doing
+	 * so may block.
+	 */
+	if (p->p_flag & P_THREAD) {
+		/* Just a thread */
+		proc_free(p);
+	} else {
+		struct process *pr = p->p_p;
 
-	SCHED_ASSERT_UNLOCKED();
+		KERNEL_LOCK();
+		/* No one will wait for us, just zap it. */
+		process_remove(pr);
+		KERNEL_UNLOCK();
 
-	for (;;) {
-		mtx_enter(&deadproc_mutex);
-		while ((p = TAILQ_FIRST(&deadproc)) == NULL)
-			msleep_nsec(&deadproc, &deadproc_mutex, PVM, "reaper",
-			    INFSLP);
-
-		/* Remove us from the deadproc list. */
-		TAILQ_REMOVE(&deadproc, p, p_runq);
-		mtx_leave(&deadproc_mutex);
-
-		/* Wait for the thread to be scheduled off the CPU. */
-		cond_wait(p->p_deadcond, "pdead");
-
-		/*
-		 * Free the VM resources we're still holding on to.
-		 * We must do this from a valid thread because doing
-		 * so may block.
-		 */
-		if (p->p_flag & P_THREAD) {
-			/* Just a thread */
-			proc_free(p);
-		} else {
-			struct process *pr = p->p_p;
-
-			KERNEL_LOCK();
-			/* No one will wait for us, just zap it. */
-			process_remove(pr);
-			KERNEL_UNLOCK();
-
-			process_zap(pr);
-		}
+		process_zap(pr);
 	}
 }
 
@@ -664,6 +647,22 @@ loop:
 			nfound++;
 			break;
 		}
+	}
+	/* init(8) accounts for cleaning up deadprocs. */
+	if (q->p_p == initprocess) {
+		struct proc *p;
+
+		KERNEL_UNLOCK();
+		mtx_enter(&deadproc_mutex);
+		while ((p = TAILQ_FIRST(&deadproc)) != NULL) {
+			/* Remove us from the deadproc list. */
+			TAILQ_REMOVE(&deadproc, p, p_runq);
+			mtx_leave(&deadproc_mutex);
+			proc_reap(p);
+			mtx_enter(&deadproc_mutex);
+		}
+		mtx_leave(&deadproc_mutex);
+		KERNEL_LOCK();
 	}
 	if (nfound == 0)
 		return (ECHILD);

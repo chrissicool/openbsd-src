@@ -554,7 +554,6 @@ extern struct processlist zombprocess;	/* List of zombie processes. */
 extern struct proclist allproc;		/* List of all threads. */
 
 extern struct process *initprocess;	/* Process slot for init. */
-extern struct proc *reaperproc;		/* Thread slot for reaper. */
 extern struct proc *syncerproc;		/* filesystem syncer daemon */
 
 extern struct pool process_pool;	/* memory pool for processes */
@@ -588,7 +587,6 @@ void	setrunnable(struct proc *);
 void	endtsleep(void *);
 int	wakeup_proc(struct proc *);
 void	unsleep(struct proc *);
-void	reaper(void *);
 __dead void exit1(struct proc *, int, int, int);
 void	cpu_fork(struct proc *_curp, struct proc *_child, void *_stack,
 	    void *_tcb, void (*_func)(void *), void *_arg);
