@@ -34,6 +34,7 @@ void sched_kthreads_create(void *);
 
 int sched_proc_to_cpu_cost(struct cpu_info *ci, struct proc *p);
 struct proc *sched_steal_proc(struct cpu_info *);
+void sched_to(struct proc *);
 
 /*
  * To help choosing which cpu should run which process we keep track
@@ -217,15 +218,14 @@ sched_exit(struct proc *p)
 
 	tuagg_add_runtime();
 
-	KERNEL_ASSERT_LOCKED();
-	sched_toidle();
+	SCHED_LOCK();
+	sched_to(sched_chooseproc());
 }
 
 void
-sched_toidle(void)
+sched_to(struct proc *nextproc)
 {
 	struct schedstate_percpu *spc = &curcpu()->ci_schedstate;
-	struct proc *idle;
 
 #ifdef MULTIPROCESSOR
 	/* This process no longer needs to hold the kernel lock. */
@@ -244,16 +244,26 @@ sched_toidle(void)
 
 	atomic_clearbits_int(&spc->spc_schedflags, SPCF_SWITCHCLEAR);
 
-	SCHED_LOCK();
-	idle = spc->spc_idleproc;
-	idle->p_stat = SRUN;
+	SCHED_ASSERT_LOCKED();
 
 	uvmexp.swtch++;
 	if (curproc != NULL)
-		TRACEPOINT(sched, off__cpu, idle->p_tid + THREAD_PID_OFFSET,
-		    idle->p_p->ps_pid);
-	cpu_switchto(NULL, idle);
+		TRACEPOINT(sched, off__cpu, nextproc->p_tid + THREAD_PID_OFFSET,
+		    nextproc->p_p->ps_pid);
+	cpu_switchto(NULL, nextproc);
 	panic("cpu_switchto returned");
+}
+
+void
+sched_toidle(void)
+{
+	struct schedstate_percpu *spc = &curcpu()->ci_schedstate;
+	struct proc *idle;
+
+	SCHED_LOCK();
+	idle = spc->spc_idleproc;
+	idle->p_stat = SRUN;
+	sched_to(idle);
 }
 
 void
