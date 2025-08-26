@@ -663,6 +663,8 @@ loop:
 		}
 		mtx_leave(&deadproc_mutex);
 		KERNEL_LOCK();
+		if (nfound == 0 && (options & WNOHANG) == 0)
+			goto sleep;
 	}
 	if (nfound == 0)
 		return (ECHILD);
@@ -670,6 +672,7 @@ loop:
 		*retval = 0;
 		return (0);
 	}
+sleep:
 	sleep_setup(q->p_p, PWAIT | PCATCH, "wait");
 	if ((error = sleep_finish(INFSLP,
 	    !ISSET(atomic_load_int(&q->p_p->ps_flags), PS_WAITEVENT))) != 0)
