@@ -893,7 +893,7 @@ process_zap(struct process *pr)
 	lim_free(pr->ps_limit);
 	crfree(pr->ps_ucred);
 	pool_put(&process_pool, pr);
-	nprocesses--;
+	atomic_dec_int(&nprocesses);
 
 	proc_free(p);
 }

@@ -78,7 +78,8 @@ void unveil_copy(struct process *parent, struct process *child);
 
 struct proc *thread_new(struct proc *_parent, vaddr_t _uaddr);
 struct process *process_new(struct proc *, struct process *, int);
-int fork_check_maxthread(uid_t _uid);
+int fork_check_maxthread(uid_t);
+int fork_check_maxprocess(uid_t);
 
 void
 fork_return(void *arg)
@@ -334,6 +335,25 @@ fork_check_maxthread(uid_t uid)
 	return 0;
 }
 
+int
+fork_check_maxprocess(uid_t uid)
+{
+	int maxprocess_local, val;
+
+	maxprocess_local = atomic_load_int(&maxprocess);
+	val = atomic_inc_int_nv(&nprocesses);
+	if ((val > maxprocess_local - 5 && uid != 0) ||
+	    val > maxprocess_local) {
+		static struct timeval lasttfm;
+
+		if (ratecheck(&lasttfm, &fork_tfmrate))
+			tablefull("process");
+		atomic_dec_int(&nprocesses);
+		return EAGAIN;
+	}
+	return 0;
+}
+
 static inline void
 fork_thread_start(struct proc *p, struct proc *parent, int flags)
 {
@@ -356,7 +376,7 @@ fork1(struct proc *curp, int flags, void (*func)(void *), void *arg,
 	struct proc *p;
 	uid_t uid = curp->p_ucred->cr_ruid;
 	struct vmspace *vm;
-	int count, maxprocess_local;
+	int count;
 	vaddr_t uaddr;
 	int error;
 	struct  ptrace_state *newptstat = NULL;
@@ -369,17 +389,10 @@ fork1(struct proc *curp, int flags, void (*func)(void *), void *arg,
 	if ((error = fork_check_maxthread(uid)))
 		return error;
 
-	maxprocess_local = atomic_load_int(&maxprocess);
-	if ((nprocesses >= maxprocess_local - 5 && uid != 0) ||
-	    nprocesses >= maxprocess_local) {
-		static struct timeval lasttfm;
-
-		if (ratecheck(&lasttfm, &fork_tfmrate))
-			tablefull("process");
+	if ((error = fork_check_maxprocess(uid))) {
 		atomic_dec_int(&nthreads);
-		return EAGAIN;
+		return error;
 	}
-	nprocesses++;
 
 	/*
 	 * Increment the count of processes running with this uid.
@@ -388,7 +401,7 @@ fork1(struct proc *curp, int flags, void (*func)(void *), void *arg,
 	count = chgproccnt(uid, 1);
 	if (uid != 0 && count > lim_cur(RLIMIT_NPROC)) {
 		(void)chgproccnt(uid, -1);
-		nprocesses--;
+		atomic_dec_int(&nprocesses);
 		atomic_dec_int(&nthreads);
 		return EAGAIN;
 	}
@@ -396,7 +409,7 @@ fork1(struct proc *curp, int flags, void (*func)(void *), void *arg,
 	uaddr = uvm_uarea_alloc();
 	if (uaddr == 0) {
 		(void)chgproccnt(uid, -1);
-		nprocesses--;
+		atomic_dec_int(&nprocesses);
 		atomic_dec_int(&nthreads);
 		return (ENOMEM);
 	}
